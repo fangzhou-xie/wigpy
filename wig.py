@@ -122,17 +122,19 @@ class WIG():
         data_ids = torch.randperm(d_l)  # ids of splitted sentences
 
         # Word2Vec model
+        print('run Word2Vec model for word embeddings...')
         word2vec = Word2Vec(sentences=[sentences[i] for i in data_ids],
                             **w2v_paradict)
         wv = word2vec.wv
 
         if algorithm == 'original':
+            print('algorithm has been chosen as original')
             X = torch.tensor(wv[wv.vocab], dtype=dtype, device=device)
             M = mjit(dist(X, metric=metric))
             mycollate = partial(getfreq_single_original, wv)
         elif algorithm == 'compress':
-            M, id2comdict = compress_dictionary(wv,
-                                                topk=1000,
+            print('algorithm has been chosen as compressed dictionary')
+            M, id2comdict = compress_dictionary(wv, topk=1000,
                                                 l1_reg=0.01,
                                                 metric='sqeuclidean')
             mycollate = partial(getfreq_single_compress, wv, id2comdict)
