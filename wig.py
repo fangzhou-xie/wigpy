@@ -6,6 +6,7 @@ import torch
 from gensim.models import Word2Vec
 from sklearn import linear_model
 from torch import Tensor, nn, optim
+from torch.utils.data import DataLoader
 
 from model import WasserIndexGen
 
@@ -40,37 +41,55 @@ stop_words = ['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves',
 
 
 class WIG():
-    def __init__(self, dataset, train_eval_test=[0.6, 0.1, 0.3],
-                 emsize=10, batch_size=64, num_topics=4, reg=0.1,
-                 epochs=5, lr=0.005, wdecay=1.2e-6, bow_norm=False,
+    def __init__(self,
+                 dataset,
+                 train_eval_test=[0.6, 0.1, 0.3],
+                 batch_size=64,
+                 num_topics=4,
+                 reg=0.1,
+                 epochs=5,
+                 lr=0.005,
+                 wdecay=1.2e-6,
+                 bow_norm=False,
+                 w2v_paradict={'min_count': 1,
+                               'size': 10},
                  log_interval=50, seed=0,
-                 algorithm='original', opt='adam',
+                 algorithm='original',
+                 opt='adam',
                  ckpt_path='./ckpt',
-                 numItermax=1000, stopThr=1e-9, dtype=torch.float32,
-                 spacy_model='en_core_web_sm', merge_entity=True,
-                 process_fn=None, remove_stop=False, remove_punct=True):
+                 numItermax=1000,
+                 stopThr=1e-9,
+                 dtype=torch.float32,
+                 spacy_model='en_core_web_sm',
+                 metric='sqeuclidean',
+                 merge_entity=True,
+                 process_fn=None,
+                 remove_stop=False,
+                 remove_punct=True):
         """
         Parameters:
         ======
         dataset         : list, of (date, doc) pairs
         train_eval_test : list, of floats sum to 1, how to split dataset
-        emsize          : int, embedding dimension
         batch_size      : int, size of a batch
         num_topics      : int, K topics
-        reg             : float, entropic regularization term in Sinkhorn distance
+        reg             : float, entropic regularization term in Sinkhorn
         epochs          : int, epochs to train
+        w2v_paradict    : dict, parameters of gensim.models.Word2Vecs.
+                          size => emsize
         lr              : float, learning rate for optimizer
         wdecay          : float, L-2 regularization term used by some optimizers
-        bow_norm        : bool, whether normalize each batch before feed into model
-        log_interval    : int,
-        seed            : int, random seed for pytorch
-        algorithm       : str, 'original' or 'compressed'
+        bow_norm        : bool, normalize each batch before feed into model
+        log_interval    : int, print log one per k steps
+        seed            : int, pseudo-random seed for pytorch
+        algorithm       : str, 'original' or 'compress'
         opt             : str, which optimizer to use, default to 'adam'
         ckpt_path       : str, checkpoint when training model
-        numItermax      : int, max steps to run for Sinkhorn algorithm, dafault 1000
+        numItermax      : int, max steps to run Sinkhorn, dafault 1000
         dtype           : torch.dtype, default torch.float32
         spacy_model     : str, spacy language model name
                         Default: nlp = spacy.load('en_core_web_sm', disable=["tagger"])
+        metric          : str, 'sqeuclidean' or 'euclidean'
         merge_entity    : bool, merge entity detected by spacy model, default True
         process_fn      : callable, arg: (nlp, doc), None to use default
                         Usage: process_fn = my_process_fn(nlp, doc)
@@ -85,7 +104,7 @@ class WIG():
         if torch.cuda.is_available():
             torch.cuda.manual_seed(seed)
 
-        self.id2date, self.id2doc, self.senid2docid = \
+        sentences, self.id2date, self.id2doc, self.senid2docid = \
             self.idmap(dataset, spacy_model, merge_entity, process_fn,
                        remove_stop, remove_punct)
 
@@ -95,13 +114,38 @@ class WIG():
             'Three shares do not sum to one.'
         train_r, eval_r, test_r = train_eval_test
         print(f'Splitting data by ratio: {train_r} {eval_r} {test_r}')
-        train_l = round(d_l * train_r)
-        test_l = round(d_l * test_r)
-        eval_l = d_l - train_l - test_l
+        tr_l = round(d_l * train_r)
+        ts_l = round(d_l * test_r)
+        ev_l = d_l - tr_l - ts_l
 
+        # shuffle ids
         data_ids = torch.randperm(d_l)  # ids of splitted sentences
-        self.train_ids, self.eval_ids, self.test_ids = \
-            torch.split(data_ids, [train_l, eval_l, test_l])
+
+        # Word2Vec model
+        word2vec = Word2Vec(sentences=[sentences[i] for i in data_ids],
+                            **w2v_paradict)
+        wv = word2vec.wv
+
+        if algorithm == 'original':
+            X = torch.tensor(wv[wv.vocab], dtype=dtype, device=device)
+            M = mjit(dist(X, metric=metric))
+            mycollate = partial(getfreq_single_original, wv)
+        elif algorithm == 'compress':
+            M, id2comdict = compress_dictionary(wv,
+                                                topk=1000,
+                                                l1_reg=0.01,
+                                                metric='sqeuclidean')
+            mycollate = partial(getfreq_single_compress, wv, id2comdict)
+        else:
+            raise ValueError("use 'original' or 'compress' algotithm")
+
+        tr_ids, ev_ids, ts_ids = data_ids.split([tr_l, ev_l, ts_l])
+        self.tr_dl = DataLoader([sentences[i] for i in tr_ids],
+                                batch_size=batch_size, collate_fn=mycollate)
+        self.ev_dl = DataLoader([sentences[i] for i in ev_ids],
+                                batch_size=batch_size, collate_fn=mycollate)
+        self.ts_dl = DataLoader([sentences[i] for i in ts_ids],
+                                batch_size=batch_size, collate_fn=mycollate)
 
         self.lr = lr
         self.epochs = epochs
@@ -120,8 +164,7 @@ class WIG():
             global device
             device = torch.device('cpu')
 
-        self.model = WasserIndexGen(emsize=emsize,
-                                    batch_size=batch_size,
+        self.model = WasserIndexGen(batch_size=batch_size,
                                     num_topics=num_topics,
                                     reg=reg,
                                     numItermax=numItermax,
@@ -176,6 +219,7 @@ class WIG():
                         for d in spacy_doc.sents]
             return sens
         id2date, id2doc, senid2docid = {}, {}, {}
+        sentences = []
         sen_id = 0
         if merge_entity:
             print(f'Loading spacy model {spacy_model}')
@@ -191,15 +235,16 @@ class WIG():
             id2date[id] = date
             id2doc[id] = doc
             sens = process(doc)
+            sentences += sens
             for i in sens:
                 senid2docid[sen_id] = id
                 sen_id += 1
-        return id2date, id2doc, senid2docid
+        return sentences, id2date, id2doc, senid2docid
 
-    def train(self, train_data, eval_data):
+    def train(self, train_loader, eval_loader):
         pass
 
-    def evaluate(self, eval_data, test_data):
+    def evaluate(self, eval_loader, test_loader):
         pass
 
     def generateindex(self, time_text):
@@ -211,7 +256,7 @@ def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean')
     vocab = gensim_wv.vocab
     assert topk < len(vocab), \
         'topk excess dictionary length, pick smaller number'
-    l = linear_model.Lasso(alpha=l1_reg, fit_intercept=False)
+    lasso = linear_model.Lasso(alpha=l1_reg, fit_intercept=False)
     base_tokens = []
     for i in range(len(vocab)):
         if len(base_tokens) == topk:
@@ -231,9 +276,9 @@ def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean')
             id2comdict.append(z)
         else:
             # fit N * k to N * 1, return 1 * k
-            l.fit(X.T, torch.tensor(gensim_wv[tk],
-                                    dtype=dtype, device=device).view(-1, 1))
-            z = torch.tensor(l.coef_, dtype=dtype, device=device)
+            lasso.fit(X.T, torch.tensor(gensim_wv[tk],
+                                        dtype=dtype, device=device).view(-1, 1))
+            z = torch.tensor(lasso.coef_, dtype=dtype, device=device)
             id2comdict.append(z)
     # return base_tokens, other_tokens
     return M, id2comdict

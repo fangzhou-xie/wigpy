@@ -6,13 +6,12 @@ from torch import Tensor, nn
 
 
 class WasserIndexGen(nn.Module):
-    def __init__(self, emsize=10, batch_size=64, num_topics=4, reg=0.1,
+    def __init__(self, batch_size=64, num_topics=4, reg=0.1,
                  numItermax=1000, stopThr=1e-9, dtype=torch.float32,
                  device='cuda'):
         super(WasserIndexGen, self).__init__()
 
         # hyperparameters
-        self.emsize = emsize
         self.batch_size = batch_size
         self.num_topics = num_topics
         self.reg = reg
