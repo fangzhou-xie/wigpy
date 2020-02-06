@@ -1,19 +1,8 @@
 # coding: utf-8
 # this file contains Wasserstein Index Generation model class
 
-# import html
-# import os
-# import pdb
-# import sqlite3 as lite
-# from datetime import datetime
-# from functools import partial
-
 import torch
 from torch import Tensor, nn
-
-# import torch.multiprocessing as mp
-# from torch.nn.functional import softmax
-# from torch.utils.data import DataLoader, Dataset, random_split
 
 
 class WasserIndexGen(nn.Module):

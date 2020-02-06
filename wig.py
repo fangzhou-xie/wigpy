@@ -1,12 +1,16 @@
 import pdb
+from functools import partial
 
+import spacy
 import torch
+from gensim.models import Word2Vec
 from sklearn import linear_model
 from torch import Tensor, nn, optim
 
 from model import WasserIndexGen
 
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+spacy.prefer_gpu()
 
 # from nltk.corpus import stopwords;  stopwords.words('english');
 stop_words = ['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves',
@@ -36,12 +40,68 @@ stop_words = ['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves',
 
 
 class WIG():
-    def __init__(self, emsize=10, batch_size=64, num_topics=4, reg=0.1,
-                 epochs=5,  lr=0.005, wdecay=1.2e-6,
+    def __init__(self, dataset, train_eval_test=[0.6, 0.1, 0.3],
+                 emsize=10, batch_size=64, num_topics=4, reg=0.1,
+                 epochs=5, lr=0.005, wdecay=1.2e-6, bow_norm=False,
                  log_interval=50, seed=0,
-                 algorithm='original', opt='sgd', bow_norm=False,
+                 algorithm='original', opt='adam',
                  ckpt_path='./ckpt',
-                 numItermax=1000, stopThr=1e-9, dtype=torch.float32):
+                 numItermax=1000, stopThr=1e-9, dtype=torch.float32,
+                 spacy_model='en_core_web_sm', merge_entity=True,
+                 process_fn=None, remove_stop=False, remove_punct=True):
+        """
+        Parameters:
+        ======
+        dataset         : list, of (date, doc) pairs
+        train_eval_test : list, of floats sum to 1, how to split dataset
+        emsize          : int, embedding dimension
+        batch_size      : int, size of a batch
+        num_topics      : int, K topics
+        reg             : float, entropic regularization term in Sinkhorn distance
+        epochs          : int, epochs to train
+        lr              : float, learning rate for optimizer
+        wdecay          : float, L-2 regularization term used by some optimizers
+        bow_norm        : bool, whether normalize each batch before feed into model
+        log_interval    : int,
+        seed            : int, random seed for pytorch
+        algorithm       : str, 'original' or 'compressed'
+        opt             : str, which optimizer to use, default to 'adam'
+        ckpt_path       : str, checkpoint when training model
+        numItermax      : int, max steps to run for Sinkhorn algorithm, dafault 1000
+        dtype           : torch.dtype, default torch.float32
+        spacy_model     : str, spacy language model name
+                        Default: nlp = spacy.load('en_core_web_sm', disable=["tagger"])
+        merge_entity    : bool, merge entity detected by spacy model, default True
+        process_fn      : callable, arg: (nlp, doc), None to use default
+                        Usage: process_fn = my_process_fn(nlp, doc)
+                            'nlp' is the class imported by spacy lang model
+                            you can also add your personal pipeline here
+        remove_stop     : bool, whether to remove stop words, default False
+        remove_punct    : bool, whether to remove punctuation, default True
+        """
+
+        # set random seed
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+
+        self.id2date, self.id2doc, self.senid2docid = \
+            self.idmap(dataset, spacy_model, merge_entity, process_fn,
+                       remove_stop, remove_punct)
+
+        # prepare train, eval, and test data
+        d_l = len(self.senid2docid.keys())
+        assert sum(train_eval_test) == 1., \
+            'Three shares do not sum to one.'
+        train_r, eval_r, test_r = train_eval_test
+        print(f'Splitting data by ratio: {train_r} {eval_r} {test_r}')
+        train_l = round(d_l * train_r)
+        test_l = round(d_l * test_r)
+        eval_l = d_l - train_l - test_l
+
+        data_ids = torch.randperm(d_l)  # ids of splitted sentences
+        self.train_ids, self.eval_ids, self.test_ids = \
+            torch.split(data_ids, [train_l, eval_l, test_l])
 
         self.lr = lr
         self.epochs = epochs
@@ -60,19 +120,16 @@ class WIG():
             global device
             device = torch.device('cpu')
 
-        # set random seed
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
-
         self.model = WasserIndexGen(emsize=emsize,
                                     batch_size=batch_size,
                                     num_topics=num_topics,
                                     reg=reg,
                                     numItermax=numItermax,
                                     stopThr=stopThr,
-                                    dtype=dtype)
+                                    dtype=dtype,
+                                    device=device)
 
+        print(f'WIG model {self.model}')
         if opt == 'adam':
             self.optimizer = optim.Adam(self.model.parameters(), lr=lr,
                                         weight_decay=wdecay)
@@ -89,45 +146,110 @@ class WIG():
             self.optimizer = optim.ASGD(self.model.parameters(), lr=lr,
                                         t0=0, lambd=0., weight_decay=wdecay)
         else:
-            print('Defaulting to vanilla SGD')
+            print('Optimizer not supported . Defaulting to vanilla SGD...')
             self.optimizer = optim.SGD(self.model.parameters(), lr=lr)
 
-    def train(self, train_data, evel_data):
+    def idmap(self, dataset, spacy_model, merge_entity, process_fn,
+              remove_stop, remove_punct):
+        """
+        spacy_model: str, spacy language model name
+            Default: nlp = spacy.load('en_core_web_sm', disable=["tagger"])
+        merge_entity: bool, merge entity detected by spacy model
+            Default: True
+        process_fn: callable, take (nlp, doc) as input
+            Default: None
+            Usage: process_fn = my_process_fn(nlp, doc)
+            'nlp' is the class imported by spacy lang model
+            you can also add your personal pipeline here
+        remove_stop: bool, whether to remove stop words
+            Default: False
+        remove_punct: bool, whether to remove punctuation
+            Default: True
+        """
+        def default_fn(nlp, doc):
+            spacy_doc = nlp(doc)
+            if remove_punct:
+                sens = [[i.lemma_ for i in d if not i.is_punct]
+                        for d in spacy_doc.sents]
+            if remove_stop:
+                sens = [[i.lemma_ for i in d if not i.is_stop]
+                        for d in spacy_doc.sents]
+            return sens
+        id2date, id2doc, senid2docid = {}, {}, {}
+        sen_id = 0
+        if merge_entity:
+            print(f'Loading spacy model {spacy_model}')
+            nlp = spacy.load(spacy_model, disable=["tagger"])
+            merge_ents = nlp.create_pipe("merge_entities")
+            nlp.add_pipe(merge_ents)
+        if not process_fn:  # if not providing
+            process = partial(nlp, default_fn)
+        else:
+            process = partial(nlp, process_fn)
+        for id, date_doc in enumerate(dataset):
+            date, doc = date_doc
+            id2date[id] = date
+            id2doc[id] = doc
+            sens = process(doc)
+            for i in sens:
+                senid2docid[sen_id] = id
+                sen_id += 1
+        return id2date, id2doc, senid2docid
+
+    def train(self, train_data, eval_data):
         pass
 
     def evaluate(self, eval_data, test_data):
         pass
 
+    def generateindex(self, time_text):
+        pass
 
-def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean',
-                        dtype=torch.float32):
+
+def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean'):
     "gensim_wv is gensim_model.wv"
     vocab = gensim_wv.vocab
     assert topk < len(vocab), \
         'topk excess dictionary length, pick smaller number'
-    # l = linear_model.Lasso(alpha=l1_reg, fit_intercept=False)
+    l = linear_model.Lasso(alpha=l1_reg, fit_intercept=False)
     base_tokens = []
     for i in range(len(vocab)):
         if len(base_tokens) == topk:
             break
         if gensim_wv.index2entity[i] not in stop_words:
             base_tokens.append(gensim_wv.index2entity[i])
-    other_tokens = [i for i in vocab.keys() if i not in base_tokens]
-    # X = torch.tensor(gensim_wv[base_tokens], dtype=dtype)
-    # M = mjit(dist(X, metric=metric))
-    return base_tokens, other_tokens
+    # other_tokens = [i for i in vocab.keys() if i not in base_tokens]
+    X = torch.tensor(gensim_wv[base_tokens],
+                     dtype=dtype,
+                     device=device)  # compressed dist
+    M = mjit(dist(X, metric=metric))
+    id2comdict = []
+    for tk in gensim_wv.vocab.keys():
+        if tk in base_tokens:
+            z = torch.zeros(topk, dtype=dtype, device=device)
+            z[base_tokens.index(tk)] == 1.
+            id2comdict.append(z)
+        else:
+            # fit N * k to N * 1, return 1 * k
+            l.fit(X.T, torch.tensor(gensim_wv[tk],
+                                    dtype=dtype, device=device).view(-1, 1))
+            z = torch.tensor(l.coef_, dtype=dtype, device=device)
+            id2comdict.append(z)
+    # return base_tokens, other_tokens
+    return M, id2comdict
 
 
-def getfreq_single_compress(wv_vocab, base_tokens, other_tokens, l1_reg,
-                            sentence):
-    pass
+def getfreq_single_compress(gensim_wv, id2comdict, sentence):
+    senvec = [sentence.count(i) for i in gensim_wv.index2word]
+    sendist = torch.stack([ct * id2comdict[id] for id, ct in enumerate(senvec)])
+    return tensordiv(sendist.sum(dim=0))
 
 
-def getfreq_single_original(wv_vocab, sentence):
+def getfreq_single_original(gensim_wv, sentence):
     """get the word distribution of a certain sentence"""
     # assert sentence != []
-    senvec = [sentence.count(i) for i in wv_vocab.index2word]
-    sendist = torch.tensor(senvec, dtype=torch.float32)
+    senvec = [sentence.count(i) for i in gensim_wv.index2word]
+    sendist = torch.tensor(senvec, dtype=dtype, device=device)
     # pdb.set_trace()
     return tensordiv(sendist)
 
@@ -189,8 +311,8 @@ def euclidean_distances(X, Y, squared=False):
     distances *= -2
     distances += XX
     distances += YY
-    torch.max(distances, torch.zeros(
-        distances.shape, device=device), out=distances)
+    torch.max(distances, torch.zeros(distances.shape, dtype=dtype,
+                                     device=device), out=distances)
     if X is Y:
         # Ensure that distances between vectors and themselves are set to 0.0.
         # This may not be the case due to floating point rounding errors.
@@ -199,7 +321,7 @@ def euclidean_distances(X, Y, squared=False):
 
 
 class Lasso(nn.Module):
-    "Lasso for compressing dictionary"
+    "Lasso for compressing dictionary, xxxxxx"
 
     def __init__(self, input_size):
         super(Lasso, self).__init__()
