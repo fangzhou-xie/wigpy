@@ -1,7 +1,11 @@
 import os
 import pdb
+from collections import OrderedDict, defaultdict
+from datetime import datetime
 from functools import partial
 
+import numpy as np
+import pandas as pd
 import spacy
 import torch
 from gensim.models import Word2Vec
@@ -68,6 +72,7 @@ class WIG():
                  remove_stop=False,
                  remove_punct=True,
                  device='cuda',
+                 interval='M',
                  **kwargs):
         """
         Parameters:
@@ -98,6 +103,7 @@ class WIG():
                             you can also add your personal pipeline here
         remove_stop     : bool, whether to remove stop words, default False
         remove_punct    : bool, whether to remove punctuation, default True
+        interval        : 'M', 'Y', 'D'
 
         Also parameters from Word2Vec
         """
@@ -113,6 +119,7 @@ class WIG():
         self.opt = opt
         self.lr = lr
         self.wdecay = wdecay
+        self.interval = interval
 
         self.log_interval = log_interval
         # self.algorithm = algorithm  # 'original' or 'compressed'
@@ -130,7 +137,7 @@ class WIG():
         if torch.cuda.is_available():
             torch.cuda.manual_seed(seed)
 
-        sentences, self.id2date, self.id2doc, self.senid2docid = \
+        sentences, self.id2date, self.id2doc, self.senid2docid, self.date2idlist = \
             self.idmap(dataset, spacy_model, merge_entity, process_fn,
                        remove_stop, remove_punct)
 
@@ -252,6 +259,8 @@ class WIG():
 
                 self.basis = softmax(self.R, dim=0)  # softmax over columns
                 self.lbd = softmax(self.A, dim=0)
+
+            # if not self.infer:
             # evaluate after training
             eval_loss = self.evaluate(self.eval_loader, self.ev_ids,
                                       self.basis, self.lbd)
@@ -297,9 +306,12 @@ class WIG():
         "projection algorithm, default 'svd', or 'pca', 'ica'"
         # TODO: generate time-series index from model
         raise NotImplementedError('generate index')
-        # load basis and \lambda
-        basis = self.basis.cpu().numpy()
-        lbd = self.lbd.cpu().numpy()
+        with open(self.ckpt, 'rb') as f:
+            m = torch.load(f)
+
+        # load basis and \lambda to cpu
+        basis = m.basis.cpu()
+        lbd = m.lbd.cpu()
 
         if proj_algo == 'svd':
             proj = TruncatedSVD(n_components=1, random_state=self.seed)
@@ -310,6 +322,21 @@ class WIG():
             proj = PCA(n_components=1, random_state=self.seed)
             raise NotImplementedError('PCA not available')
 
+        basis_proj = proj.fit_transform(basis.T).T
+        index_docs = basis_proj @ lbd
+        ordereddate = OrderedDict(sorted(self.date2idlist.items()))
+        interval_len = [len(v) for k, v in ordereddate.items()]
+        # index_docs.split(interval_len)
+
+        index = np.array([i.sum()
+                          for i in index_docs.split(interval_len)]).reshape(-1, 1)
+        date_interval = np.array(list(ordereddate.keys())).reshape(-1, 1)
+        m = np.concatenate([date_interval, index], axis=1)
+        df = pd.DataFrame(m, columns=['date', 'index'])
+        if not os.path.exists('./results'):
+            os.makedirs('./results')
+        with open(os.path.join('./results', 'index.tsv'), 'w') as f:
+            df.to_csv(f, sep='\t', header=True, index=False)
         pass
 
     def idmap(self, dataset, spacy_model, merge_entity, process_fn,
@@ -329,6 +356,17 @@ class WIG():
         remove_punct: bool, whether to remove punctuation
             Default: True
         """
+        def date2str(date, interval):
+            dt = datetime.strptime(date, '%Y-%m-%d')
+            if interval == 'M':
+                return str(dt.date())[:7]
+            elif interval == 'Y':
+                return str(dt.date())[:4]
+            elif interval == 'D':
+                return str(dt.date())
+            else:
+                raise ValueError("value of 'interval' must be in 'M' 'Y' 'D'")
+
         def default_fn(nlp, doc):
             spacy_doc = nlp(doc)
             if remove_punct:
@@ -339,6 +377,7 @@ class WIG():
                         for d in spacy_doc.sents]
             return sens
         id2date, id2doc, senid2docid = {}, {}, {}
+        date2idlist = defaultdict(list)
         sentences = []
         sen_id = 0
         if merge_entity:
@@ -354,12 +393,14 @@ class WIG():
             date, doc = date_doc
             id2date[id] = date
             id2doc[id] = doc
+            shortdate = date2str(date, self.interval)
+            date2idlist[shortdate].append(id)
             sens = process(doc)
             sentences += sens
             for i in sens:
                 senid2docid[sen_id] = id
                 sen_id += 1
-        return sentences, id2date, id2doc, senid2docid
+        return sentences, id2date, id2doc, senid2docid, date2idlist
 
 
 def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean'):
