@@ -1,3 +1,4 @@
+import os
 import pdb
 from functools import partial
 
@@ -5,7 +6,9 @@ import spacy
 import torch
 from gensim.models import Word2Vec
 from sklearn import linear_model
+from sklearn.decomposition import PCA, FastICA, TruncatedSVD
 from torch import Tensor, nn, optim
+from torch.nn.functional import softmax
 from torch.utils.data import DataLoader
 
 from model import WasserIndexGen
@@ -44,18 +47,16 @@ class WIG():
     def __init__(self,
                  dataset,
                  train_eval_test=[0.6, 0.1, 0.3],
+                 emsize=10,
                  batch_size=64,
                  num_topics=4,
                  reg=0.1,
                  epochs=5,
+                 opt='adam',
                  lr=0.005,
                  wdecay=1.2e-6,
-                 bow_norm=False,
-                 w2v_paradict={'min_count': 1,
-                               'size': 10},
                  log_interval=50, seed=0,
                  algorithm='original',
-                 opt='adam',
                  ckpt_path='./ckpt',
                  numItermax=1000,
                  stopThr=1e-9,
@@ -65,21 +66,21 @@ class WIG():
                  merge_entity=True,
                  process_fn=None,
                  remove_stop=False,
-                 remove_punct=True):
+                 remove_punct=True,
+                 device='cuda',
+                 **kwargs):
         """
         Parameters:
         ======
         dataset         : list, of (date, doc) pairs
         train_eval_test : list, of floats sum to 1, how to split dataset
+        emsize          : int, dim of embedding
         batch_size      : int, size of a batch
         num_topics      : int, K topics
         reg             : float, entropic regularization term in Sinkhorn
         epochs          : int, epochs to train
-        w2v_paradict    : dict, parameters of gensim.models.Word2Vecs.
-                          size => emsize
         lr              : float, learning rate for optimizer
         wdecay          : float, L-2 regularization term used by some optimizers
-        bow_norm        : bool, normalize each batch before feed into model
         log_interval    : int, print log one per k steps
         seed            : int, pseudo-random seed for pytorch
         algorithm       : str, 'original' or 'compress'
@@ -97,7 +98,32 @@ class WIG():
                             you can also add your personal pipeline here
         remove_stop     : bool, whether to remove stop words, default False
         remove_punct    : bool, whether to remove punctuation, default True
+
+        Also parameters from Word2Vec
         """
+        # hyperparameters
+        self.batch_size = batch_size
+        self.num_topics = num_topics
+        self.reg = reg
+        self.epochs = epochs
+        self.lr = lr
+        self.emsize = emsize
+
+        # opt
+        self.opt = opt
+        self.lr = lr
+        self.wdecay = wdecay
+
+        self.log_interval = log_interval
+        # self.algorithm = algorithm  # 'original' or 'compressed'
+
+        # ckpt
+        self.ckpt = os.path.join(ckpt_path,
+                                 f'WIG_Bsz_{batch_size}_K_{num_topics}_LR_{lr}_\
+                                 EMsize_{emsize}_Reg_{reg}_Opt_{opt}_Algorithm_{algorithm}')
+        self.ckpt_path = ckpt_path
+        if not os.path.exists(ckpt_path):
+            os.makedirs(ckpt_path)
 
         # set random seed
         torch.manual_seed(seed)
@@ -109,7 +135,7 @@ class WIG():
                        remove_stop, remove_punct)
 
         # prepare train, eval, and test data
-        d_l = len(self.senid2docid.keys())
+        self.d_l = d_l = len(self.senid2docid.keys())
         assert sum(train_eval_test) == 1., \
             'Three shares do not sum to one.'
         train_r, eval_r, test_r = train_eval_test
@@ -124,24 +150,30 @@ class WIG():
         # Word2Vec model
         print('run Word2Vec model for word embeddings...')
         word2vec = Word2Vec(sentences=[sentences[i] for i in data_ids],
-                            **w2v_paradict)
+                            **kwargs)
         wv = word2vec.wv
+        self.vocab = wv.vocab
 
+        # choose with algorithm to use, if compressed then shrink vocab dim
         if algorithm == 'original':
             print('algorithm has been chosen as original')
             X = torch.tensor(wv[wv.vocab], dtype=dtype, device=device)
-            M = mjit(dist(X, metric=metric))
+            self.M = mjit(dist(X, metric=metric))
             mycollate = partial(getfreq_single_original, wv)
         elif algorithm == 'compress':
             print('algorithm has been chosen as compressed dictionary')
-            M, id2comdict = compress_dictionary(wv, topk=1000,
-                                                l1_reg=0.01,
-                                                metric='sqeuclidean')
+            self.M, id2comdict = compress_dictionary(wv, topk=1000,
+                                                     l1_reg=0.01,
+                                                     metric='sqeuclidean')
             mycollate = partial(getfreq_single_compress, wv, id2comdict)
         else:
+            # TODO: geodesic regression with l1?
             raise ValueError("use 'original' or 'compress' algotithm")
 
         tr_ids, ev_ids, ts_ids = data_ids.split([tr_l, ev_l, ts_l])
+        self.tr_ids = tr_ids
+        self.ev_ids = ev_ids
+        self.ts_ids = ts_ids
         self.tr_dl = DataLoader([sentences[i] for i in tr_ids],
                                 batch_size=batch_size, collate_fn=mycollate)
         self.ev_dl = DataLoader([sentences[i] for i in ev_ids],
@@ -149,50 +181,136 @@ class WIG():
         self.ts_dl = DataLoader([sentences[i] for i in ts_ids],
                                 batch_size=batch_size, collate_fn=mycollate)
 
-        self.lr = lr
-        self.epochs = epochs
-        self.log_interval = log_interval
-        self.algorithm = algorithm  # 'original' or 'compressed'
-
+        global dt
         if dtype:
-            global dtype
-            dtype = dtype
+            dt = dtype
 
+        global dev
         if device == 'cuda':
-            global device
-            device = torch.device(
-                'cuda' if torch.cuda.is_available() else 'cpu')
+            dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         else:
-            global device
-            device = torch.device('cpu')
+            dev = torch.device('cpu')
 
         self.model = WasserIndexGen(batch_size=batch_size,
                                     num_topics=num_topics,
                                     reg=reg,
                                     numItermax=numItermax,
                                     stopThr=stopThr,
-                                    dtype=dtype,
-                                    device=device)
+                                    dtype=dt,
+                                    device=dev)
 
         print(f'WIG model {self.model}')
-        if opt == 'adam':
-            self.optimizer = optim.Adam(self.model.parameters(), lr=lr,
-                                        weight_decay=wdecay)
-        elif opt == 'adagrad':
-            self.optimizer = optim.Adagrad(
-                self.model.parameters(), lr=lr, weight_decay=wdecay)
-        elif opt == 'adadelta':
-            self.optimizer = optim.Adadelta(
-                self.model.parameters(), lr=lr, weight_decay=wdecay)
-        elif opt == 'rmsprop':
-            self.optimizer = optim.RMSprop(
-                self.model.parameters(), lr=lr, weight_decay=wdecay)
-        elif opt == 'asgd':
-            self.optimizer = optim.ASGD(self.model.parameters(), lr=lr,
-                                        t0=0, lambd=0., weight_decay=wdecay)
+
+        # init
+        self.R = torch.randn((self.M.shape[0], self.num_topics), device=dev)
+        self.A = torch.randn((self.num_topics, self.d_l), device=dev)
+        self.basis = softmax(self.R, dim=0)  # softmax over columns
+        self.lbd = softmax(self.A, dim=0)
+
+    def train(self, train_loader, eval_loader):
+
+        # set optimizer
+        if self.opt == 'adam':
+            optimizer = optim.Adam([self.R, self.A], lr=self.lr,
+                                   weight_decay=self.wdecay)
+        elif self.opt == 'adagrad':
+            optimizer = optim.Adagrad([self.R, self.A], lr=self.lr,
+                                      weight_decay=self.wdecay)
+        elif self.opt == 'adadelta':
+            optimizer = optim.Adadelta([self.R, self.A], lr=self.lr,
+                                       weight_decay=self.wdecay)
+        elif self.opt == 'rmsprop':
+            optimizer = optim.RMSprop([self.R, self.A], lr=self.lr,
+                                      weight_decay=self.wdecay)
+        elif self.opt == 'asgd':
+            optimizer = optim.ASGD([self.R, self.A], lr=self.lr,
+                                   weight_decay=self.wdecay, t0=0, lambd=0.)
         else:
             print('Optimizer not supported . Defaulting to vanilla SGD...')
-            self.optimizer = optim.SGD(self.model.parameters(), lr=lr)
+            optimizer = optim.SGD([self.R, self.A], lr=self.lr)
+
+        total_loss = 0.
+        best_loss = 1e9
+        for epoch in range(self.epochs):
+            tr_id = 0
+            for b_id, batch in enumerate(train_loader):
+                for sub_id, each in enumerate(batch):
+                    csa = each.view(-1, 1).to(dev)
+                    clbd = self.lbd[:,
+                                    self.tr_ids[tr_id]].view(-1, 1).to(dev)
+
+                    # basis.requires_grad_()
+                    # clbd.requires_grad_()
+                    reg = torch.tensor([self.reg]).to(dev)
+
+                    loss = self.model(csa, self.M, self.basis, clbd, reg)
+                    loss.backward()
+                    optimizer.step()
+                    # TODO: check learnable parameterss
+                    total_loss += loss.item()
+                    tr_id += 1
+
+                self.basis = softmax(self.R, dim=0)  # softmax over columns
+                self.lbd = softmax(self.A, dim=0)
+            # evaluate after training
+            eval_loss = self.evaluate(self.eval_loader, self.ev_ids,
+                                      self.basis, self.lbd)
+            if eval_loss < best_loss:  # save bast model among all epochs
+                with open(self.ckpt, 'wb') as f:
+                    torch.save(self.model, f)
+                best_loss = eval_loss
+            print('*' * 50)
+            print(f'Epoch: {epoch}, LR: {self.lr}, \
+                    Train Loss: {total_loss/tr_id}, Eval Loss: {eval_loss}')
+            print('*' * 50)
+            if epoch % self.visualize_every == 0:
+                # TODO: implement visualize function per log_interval
+                #     visualize(self.model, self.vocab)
+                pass
+        with open(self.ckpt, 'rb') as f:
+            m = torch.load(f)
+        eval_loss = self.evaluate(m, self.eval_loader, self.ev_ids,
+                                  self.basis, self.lbd)
+        print(f'Evaluation Loss: {eval_loss}')
+        return eval_loss
+
+    def evaluate(self, model, data_loader, data_ids, basis, lbd):
+        """
+
+        data_loader: either eval_loader or test_loader
+        data_ids: self.eval_ids or self.test_ids
+        """
+        model.eval()
+        with torch.no_grad():
+            total_loss = 0.
+            reg = torch.tensor([self.reg]).to(dev)
+            ts_id = 0
+            for b_id, batch in enumerate(data_loader):
+                sa = batch.view(-1, 1).to(dev)
+                clbd = lbd[:, data_ids[ts_id]].view(-1, 1)
+                loss = model(sa, self.M, basis, clbd, reg)
+                total_loss += loss.item()
+                ts_id += 1
+        return loss / ts_id
+
+    def generateindex(self, proj_algo='svd'):
+        "projection algorithm, default 'svd', or 'pca', 'ica'"
+        # TODO: generate time-series index from model
+        raise NotImplementedError('generate index')
+        # load basis and \lambda
+        basis = self.basis.cpu().numpy()
+        lbd = self.lbd.cpu().numpy()
+
+        if proj_algo == 'svd':
+            proj = TruncatedSVD(n_components=1, random_state=self.seed)
+        elif proj_algo == 'ica':
+            proj = FastICA(n_components=1, random_state=self.seed)
+            raise NotImplementedError('ICA not available')
+        elif proj_algo == 'pca':
+            proj = PCA(n_components=1, random_state=self.seed)
+            raise NotImplementedError('PCA not available')
+
+        pass
 
     def idmap(self, dataset, spacy_model, merge_entity, process_fn,
               remove_stop, remove_punct):
@@ -243,21 +361,12 @@ class WIG():
                 sen_id += 1
         return sentences, id2date, id2doc, senid2docid
 
-    def train(self, train_loader, eval_loader):
-        pass
-
-    def evaluate(self, eval_loader, test_loader):
-        pass
-
-    def generateindex(self, time_text):
-        pass
-
 
 def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean'):
     "gensim_wv is gensim_model.wv"
+    print('compressing dictionary...')
     vocab = gensim_wv.vocab
-    assert topk < len(vocab), \
-        'topk excess dictionary length, pick smaller number'
+    assert topk < len(vocab), 'pick smaller number of topk'
     lasso = linear_model.Lasso(alpha=l1_reg, fit_intercept=False)
     base_tokens = []
     for i in range(len(vocab)):
@@ -267,20 +376,19 @@ def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean')
             base_tokens.append(gensim_wv.index2entity[i])
     # other_tokens = [i for i in vocab.keys() if i not in base_tokens]
     X = torch.tensor(gensim_wv[base_tokens],
-                     dtype=dtype,
-                     device=device)  # compressed dist
+                     dtype=dt, device=dev)  # compressed dist
     M = mjit(dist(X, metric=metric))
     id2comdict = []
     for tk in gensim_wv.vocab.keys():
         if tk in base_tokens:
-            z = torch.zeros(topk, dtype=dtype, device=device)
+            z = torch.zeros(topk, dtype=dt, device=dev)
             z[base_tokens.index(tk)] == 1.
             id2comdict.append(z)
         else:
             # fit N * k to N * 1, return 1 * k
             lasso.fit(X.T, torch.tensor(gensim_wv[tk],
-                                        dtype=dtype, device=device).view(-1, 1))
-            z = torch.tensor(lasso.coef_, dtype=dtype, device=device)
+                                        dtype=dt, device=dev).view(-1, 1))
+            z = torch.tensor(lasso.coef_, dtype=dt, device=dev)
             id2comdict.append(z)
     # return base_tokens, other_tokens
     return M, id2comdict
@@ -296,7 +404,7 @@ def getfreq_single_original(gensim_wv, sentence):
     """get the word distribution of a certain sentence"""
     # assert sentence != []
     senvec = [sentence.count(i) for i in gensim_wv.index2word]
-    sendist = torch.tensor(senvec, dtype=dtype, device=device)
+    sendist = torch.tensor(senvec, dtype=dt, device=dev)
     # pdb.set_trace()
     return tensordiv(sendist)
 
@@ -358,64 +466,10 @@ def euclidean_distances(X, Y, squared=False):
     distances *= -2
     distances += XX
     distances += YY
-    torch.max(distances, torch.zeros(distances.shape, dtype=dtype,
-                                     device=device), out=distances)
+    torch.max(distances, torch.zeros(distances.shape, dtype=dt, device=dev),
+              out=distances)
     if X is Y:
         # Ensure that distances between vectors and themselves are set to 0.0.
         # This may not be the case due to floating point rounding errors.
         distances = distances - torch.diag(distances.diag())
     return distances if squared else torch.sqrt(distances, out=distances)
-
-
-class Lasso(nn.Module):
-    "Lasso for compressing dictionary, xxxxxx"
-
-    def __init__(self, input_size):
-        super(Lasso, self).__init__()
-        self.linear = nn.Linear(input_size, 1, bias=False)
-
-    def forward(self, x):
-        out = self.linear(x)
-        return out
-
-
-def lasso(x, y, lr=0.005, max_iter=2000, tol=1e-4, opt='sgd'):
-    # x = x.detach()
-    # y = y.detach()
-    lso = Lasso(x.shape[1])
-    criterion = nn.MSELoss(reduction='sum')
-    if opt == 'adam':
-        optimizer = optim.Adam(lso.parameters(), lr=lr)
-    elif opt == 'adagrad':
-        optimizer = optim.Adagrad(lso.parameters(), lr=lr)
-    else:
-        optimizer = optim.SGD(lso.parameters(), lr=lr)
-    w_prev = torch.tensor(0.)
-    for it in range(max_iter):
-        # lso.linear.zero_grad()
-        optimizer.zero_grad()
-        out = lso(x)
-        loss = criterion(out, y)
-        l1_norm = 0.1 * torch.norm(lso.linear.weight, p=1)
-        loss += l1_norm
-        loss.backward()
-        optimizer.step()
-        # pdb.set_trace()
-        w = lso.linear.weight.detach()
-        if bool(torch.norm(w_prev - w) < tol):
-            break
-        w_prev = w
-        # if it % 100 == 0:
-        # print(loss.item() - loss_prev)
-    return lso.linear.weight.detach()
-
-
-# a = torch.randn(4, 5)
-# b = torch.randn(4, 1)
-#
-# r = lasso(a, b, opt='adam')
-# print(r)
-# l = linear_model.Lasso(alpha=0.1, fit_intercept=False)
-# l.fit(a, b)
-# # l.path(a, b, verbose=True)
-# print(l.coef_)
