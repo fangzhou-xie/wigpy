@@ -13,10 +13,21 @@ def read():
     return result
 
 
+def crossvalidate():
+    for emsize in [10, 50, 100]:
+        for batch_size in [32, 64]:
+            for num_topics in [4, 10, 20]:
+                for epochs in [3, 5]:
+                    for lr in [0.001, 0.005]:
+                        for compress_topk in [500, 1000]:
+                            yield emsize, batch_size, num_topics, epochs, lr
+
+
 def main():
     data = read()
-    wig = WIG(data, compress_topk=0)
+    wig = WIG(data, compress_topk=0, epochs=1)
     wig.train(loss_per_batch=True)
+    wig.generateindex()
     pass
 
 

@@ -136,7 +136,6 @@ class WIG():
         self.loss_per_batch = loss_per_batch
 
         self.log_interval = log_interval
-        # self.algorithm = algorithm  # 'original' or 'compressed'
 
         # ckpt
         self.ckpt = os.path.join(ckpt_path,
@@ -155,7 +154,6 @@ class WIG():
         sentences, self.id2date, self.id2doc, self.senid2docid, self.date2idlist = \
             self.idmap(dataset, spacy_model, merge_entity, process_fn,
                        remove_stop, remove_punct)
-        # pdb.set_trace()
 
         # prepare train, eval, and test data
         self.d_l = d_l = len(self.senid2docid.keys())
@@ -170,8 +168,7 @@ class WIG():
         # shuffle ids
         data_ids = torch.randperm(d_l)  # ids of splitted sentences
 
-        # Word2Vec model
-        # use more workers and less min_count than default
+        # Word2Vec model use more workers and less min_count than default
         try:
             workers
         except NameError:
@@ -194,12 +191,12 @@ class WIG():
 
         # choose with algorithm to use, if compressed then shrink vocab dim
         if compress_topk == 0:
-            print('algorithm has been chosen as original')
+            print('using original algorithm')
             X = torch.tensor(wv[wv.vocab], dtype=dtype, device=device)
             self.M = mjit(dist(X, metric=metric))
             mycollate = partial(getfreq_single_original, wv)
         elif compress_topk > 0:
-            print('algorithm has been chosen as compressed dictionary')
+            print('using compressed dictionary algorithm')
             self.M, id2comdict = compress_dictionary(wv, topk=compress_topk,
                                                      l1_reg=0.01,
                                                      metric='sqeuclidean')
@@ -235,8 +232,8 @@ class WIG():
         self.A = torch.randn((self.num_topics, self.d_l),
                              device=dev)
         # softmax over columns
-        self.basis = softmax(self.R, dim=0)  # .requires_grad_()
-        self.lbd = softmax(self.A, dim=0)  # .requires_grad_()
+        self.basis = softmax(self.R, dim=0)
+        self.lbd = softmax(self.A, dim=0)
 
     @timer
     def train(self, loss_per_batch=False):
@@ -267,34 +264,29 @@ class WIG():
             tr_id = 0
             for b_id, batch in enumerate(self.tr_dl):
                 for each in batch:
-                    # self.model.zero_grad()
                     self.R.requires_grad_()
                     self.A.requires_grad_()
                     self.basis.requires_grad_()
                     self.lbd.requires_grad_()
+
                     optimizer.zero_grad()
-                    # self.basis.detach_()
-                    # self.lbd.detach_()
 
                     csa = each.view(-1, 1).to(dev)
                     clbd = self.lbd[:,
                                     self.tr_ids[tr_id]].view(-1, 1).to(dev)
 
-                    # self.basis.requires_grad_()
-                    # self.clbd.requires_grad_()
                     reg = torch.tensor([self.reg]).to(dev)
 
                     loss = self.model(csa, self.M, self.basis, clbd, reg)
                     loss.backward()
-                    # pdb.set_trace()
                     optimizer.step()
-
-                    tr_id += 1
 
                     self.R.detach_()
                     self.A.detach_()
                     self.basis.detach_()
                     self.lbd.detach_()
+
+                    tr_id += 1
 
                     if not torch.isnan(loss).item():
                         # pdb.set_trace()
@@ -375,7 +367,6 @@ class WIG():
         index_docs = basis_proj @ lbd
         ordereddate = OrderedDict(sorted(self.date2idlist.items()))
         interval_len = [len(v) for k, v in ordereddate.items()]
-        # index_docs.split(interval_len)
 
         index = np.array([i.sum()
                           for i in index_docs.split(interval_len)]).reshape(-1, 1)
@@ -495,7 +486,6 @@ def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean')
                                         dtype=dt, device='cpu').view(-1, 1))
             z = torch.tensor(lasso.coef_, dtype=dt, device=dev)
             id2comdict.append(z)
-    # return base_tokens, other_tokens
     return M, id2comdict
 
 
