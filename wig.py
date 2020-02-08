@@ -1,5 +1,5 @@
 import os
-# import pdb
+import pdb
 from collections import OrderedDict, defaultdict
 from datetime import datetime
 from functools import partial
@@ -12,6 +12,7 @@ from gensim.models import Word2Vec
 # from scipy.stats import pearsonr, spearmanr
 from sklearn import linear_model
 from sklearn.decomposition import PCA, FastICA, TruncatedSVD
+from sklearn.preprocessing import scale
 from torch import Tensor, optim
 from torch.nn.functional import softmax
 from torch.utils.data import DataLoader
@@ -198,6 +199,7 @@ class WIG():
             mycollate = partial(getfreq_single_original, wv)
         elif compress_topk > 0:
             print('using compressed dictionary algorithm')
+            print('compressed dictionary length is {}'.format(compress_topk))
             self.M, id2comdict = compress_dictionary(wv, topk=compress_topk,
                                                      l1_reg=0.01,
                                                      metric='sqeuclidean')
@@ -344,7 +346,7 @@ class WIG():
         return loss / ts_id
 
     def generateindex(self, output_file='index.tsv', proj_algo='svd',
-                      scale=False, compare=False):
+                      ifscale=False, compare=False):
         "projection algorithm, default 'svd', or 'pca', 'ica'"
         # TODO: generate time-series index from model
         # raise NotImplementedError('generate index')
@@ -375,7 +377,7 @@ class WIG():
         date_interval = np.array(list(ordereddate.keys())).reshape(-1, 1)
         m = np.concatenate([date_interval, index], axis=1)
         df = pd.DataFrame(m, columns=['date', 'index'])
-        if scale:
+        if ifscale:
             df['index'] = scale(df['index']) + 100
         if not os.path.exists('./results'):
             os.makedirs('./results')
@@ -387,15 +389,17 @@ class WIG():
                              index_col='date', parse_dates=True)
             dfcom = pd.read_csv('compare.tsv', sep='\t', index_col='date',
                                 parse_dates=True)
-            dfcom['index'] = scale(df['index']) + 100
-            praag = np.corrcoef(dfcom['index'], dfcom['indexaag'])[0, 1]
-            prori = np.corrcoef(dfcom['index'], dfcom['indexori'])[0, 1]
-            prwig = np.corrcoef(dfcom['index'], dfcom['indexwig'])[0, 1]
+            # pdb.set_trace()
+            dfcom['index'] = scale(df['index'].loc['1989-01':'2016-08']) + 100
+            # praag = np.corrcoef(dfcom['index'], dfcom['indexaag'])[0, 1]
+            prnewori = np.corrcoef(dfcom['index'], dfcom['indexori'])[0, 1]
+            praagori = np.corrcoef(dfcom['indexaag'], dfcom['indexori'])[0, 1]
             prwigori = np.corrcoef(dfcom['indexwig'], dfcom['indexori'])[0, 1]
-            prwigaag = np.corrcoef(dfcom['indexwig'], dfcom['indexori'])[0, 1]
-            print('Pearson coef ==> ORI, AAG, WIG:')
-            print('{:.4f} {:.4f} {:.4f}'.format(prori, praag, prwig))
-            print('{:.4f} {:.4f}'.format(prwigori, prwigaag))
+            # prwigaag = np.corrcoef(dfcom['indexwig'], dfcom['indexaag'])[0, 1]
+            print('Pearson coef ==> ')
+            print('AAG: {:.4f}'.format(praagori))
+            print('WIG: {:.4f}'.format(prwigori))
+            print('New: {:.4f}'.format(prnewori))
             return dfcom
 
     def idmap(self, dataset, spacy_model, merge_entity, process_fn,
