@@ -1,5 +1,8 @@
+import sqlite3 as lite
 import time
 from datetime import datetime
+
+datafile = 'headlines.db'
 
 
 def timer(method):
@@ -24,3 +27,11 @@ def timer(method):
                                                       (endtime - starttime)))
         return result
     return timed
+
+
+def readdata():
+    conn = lite.connect(datafile)
+    c = conn.cursor()
+    result = c.execute('select date, title from headlines_reduce;').fetchall()
+    conn.close()
+    return result

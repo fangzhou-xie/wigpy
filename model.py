@@ -4,7 +4,7 @@
 import torch
 from torch import Tensor, nn
 
-from util import timer
+# from utils import timer
 
 
 class WasserIndexGen(nn.Module):

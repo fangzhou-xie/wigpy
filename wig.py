@@ -1,5 +1,5 @@
 import os
-import pdb
+# import pdb
 from collections import OrderedDict, defaultdict
 from datetime import datetime
 from functools import partial
@@ -9,6 +9,7 @@ import pandas as pd
 import spacy
 import torch
 from gensim.models import Word2Vec
+# from scipy.stats import pearsonr, spearmanr
 from sklearn import linear_model
 from sklearn.decomposition import PCA, FastICA, TruncatedSVD
 from torch import Tensor, optim
@@ -16,7 +17,7 @@ from torch.nn.functional import softmax
 from torch.utils.data import DataLoader
 
 from model import WasserIndexGen
-from util import timer
+from utils import timer
 
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 spacy.prefer_gpu()
@@ -97,7 +98,8 @@ class WIG():
         numItermax      : int, max steps to run Sinkhorn, dafault 1000
         dtype           : torch.dtype, default torch.float32
         spacy_model     : str, spacy language model name
-                        Default: nlp = spacy.load('en_core_web_sm', disable=["tagger"])
+                        Default: nlp = spacy.load(
+                            'en_core_web_sm', disable=["tagger"])
         metric          : str, 'sqeuclidean' or 'euclidean'
         merge_entity    : bool, merge entity detected by spacy model, default True
         remove_stop     : bool, whether to remove stop words, default False
@@ -234,6 +236,7 @@ class WIG():
         self.basis = softmax(self.R, dim=0)
         self.lbd = softmax(self.A, dim=0)
 
+    @timer
     def train(self, loss_per_batch=False):
         # set optimizer
         if self.opt == 'adam':
@@ -340,7 +343,8 @@ class WIG():
                     ts_id += 1
         return loss / ts_id
 
-    def generateindex(self, proj_algo='svd'):
+    def generateindex(self, output_file='index.tsv', proj_algo='svd',
+                      scale=False, compare=False):
         "projection algorithm, default 'svd', or 'pca', 'ica'"
         # TODO: generate time-series index from model
         # raise NotImplementedError('generate index')
@@ -365,16 +369,34 @@ class WIG():
         ordereddate = OrderedDict(sorted(self.date2idlist.items()))
         interval_len = [len(v) for k, v in ordereddate.items()]
 
-        pdb.set_trace()
+        # pdb.set_trace()
         index = np.array([i.sum()
-                          for i in index_docs.split(interval_len)]).reshape(-1, 1)
+                          for i in index_docs.flatten().split(interval_len)]).reshape(-1, 1)
         date_interval = np.array(list(ordereddate.keys())).reshape(-1, 1)
         m = np.concatenate([date_interval, index], axis=1)
         df = pd.DataFrame(m, columns=['date', 'index'])
+        if scale:
+            df['index'] = scale(df['index']) + 100
         if not os.path.exists('./results'):
             os.makedirs('./results')
-        with open(os.path.join('./results', 'index.tsv'), 'w') as f:
+        with open(os.path.join('./results', output_file), 'w') as f:
             df.to_csv(f, sep='\t', header=True, index=False)
+
+        if compare:
+            df = pd.read_csv(os.path.join('./results', output_file), sep='\t',
+                             index_col='date', parse_dates=True)
+            dfcom = pd.read_csv('compare.tsv', sep='\t', index_col='date',
+                                parse_dates=True)
+            dfcom['index'] = scale(df['index']) + 100
+            praag = np.corrcoef(dfcom['index'], dfcom['indexaag'])[0, 1]
+            prori = np.corrcoef(dfcom['index'], dfcom['indexori'])[0, 1]
+            prwig = np.corrcoef(dfcom['index'], dfcom['indexwig'])[0, 1]
+            prwigori = np.corrcoef(dfcom['indexwig'], dfcom['indexori'])[0, 1]
+            prwigaag = np.corrcoef(dfcom['indexwig'], dfcom['indexori'])[0, 1]
+            print('Pearson coef ==> ORI, AAG, WIG:')
+            print('{:.4f} {:.4f} {:.4f}'.format(prori, praag, prwig))
+            print('{:.4f} {:.4f}'.format(prwigori, prwigaag))
+            return dfcom
 
     def idmap(self, dataset, spacy_model, merge_entity, process_fn,
               remove_stop, remove_punct):
@@ -401,7 +423,7 @@ class WIG():
             nlp.add_pipe(merge_ents)
 
         print('preprocessing data with spacy')
-        sentences, id2date, id2doc, senid2docid, date2idlist = \
+        sentences, id2date, id2doc, senid2docid, date2idlist =\
             loaddata_pipe(nlp, dataset, remove_stop,
                           remove_punct, self.interval)
         return sentences, id2date, id2doc, senid2docid, date2idlist
