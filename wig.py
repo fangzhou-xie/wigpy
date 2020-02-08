@@ -11,11 +11,12 @@ import torch
 from gensim.models import Word2Vec
 from sklearn import linear_model
 from sklearn.decomposition import PCA, FastICA, TruncatedSVD
-from torch import Tensor, nn, optim
+from torch import Tensor, optim
 from torch.nn.functional import softmax
 from torch.utils.data import DataLoader
 
 from model import WasserIndexGen
+from util import timer
 
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 spacy.prefer_gpu()
@@ -60,7 +61,7 @@ class WIG():
                  lr=0.005,
                  wdecay=1.2e-6,
                  log_interval=50, seed=0,
-                 algorithm='original',
+                 compress_topk=0,
                  ckpt_path='./ckpt',
                  numItermax=1000,
                  stopThr=1e-9,
@@ -73,6 +74,8 @@ class WIG():
                  remove_punct=True,
                  device='cuda',
                  interval='M',
+                 visualize_every=1,
+                 loss_per_batch=False,
                  **kwargs):
         """
         Parameters:
@@ -88,7 +91,7 @@ class WIG():
         wdecay          : float, L-2 regularization term used by some optimizers
         log_interval    : int, print log one per k steps
         seed            : int, pseudo-random seed for pytorch
-        algorithm       : str, 'original' or 'compress'
+        compress_topk   : int, max no of tokens to use for compressed algo
         opt             : str, which optimizer to use, default to 'adam'
         ckpt_path       : str, checkpoint when training model
         numItermax      : int, max steps to run Sinkhorn, dafault 1000
@@ -97,16 +100,25 @@ class WIG():
                         Default: nlp = spacy.load('en_core_web_sm', disable=["tagger"])
         metric          : str, 'sqeuclidean' or 'euclidean'
         merge_entity    : bool, merge entity detected by spacy model, default True
-        process_fn      : callable, arg: (nlp, doc), None to use default
-                        Usage: process_fn = my_process_fn(nlp, doc)
-                            'nlp' is the class imported by spacy lang model
-                            you can also add your personal pipeline here
         remove_stop     : bool, whether to remove stop words, default False
         remove_punct    : bool, whether to remove punctuation, default True
         interval        : 'M', 'Y', 'D'
+        visualize_every : int,
+        loss_per_batch  : bool, if print loss per batch
 
         Also parameters from Word2Vec
         """
+
+        global dt
+        if dtype:
+            dt = dtype
+
+        global dev
+        if device == 'cuda':
+            dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            dev = torch.device('cpu')
+
         # hyperparameters
         self.batch_size = batch_size
         self.num_topics = num_topics
@@ -120,6 +132,8 @@ class WIG():
         self.lr = lr
         self.wdecay = wdecay
         self.interval = interval
+        self.visualize_every = visualize_every
+        self.loss_per_batch = loss_per_batch
 
         self.log_interval = log_interval
         # self.algorithm = algorithm  # 'original' or 'compressed'
@@ -127,7 +141,8 @@ class WIG():
         # ckpt
         self.ckpt = os.path.join(ckpt_path,
                                  f'WIG_Bsz_{batch_size}_K_{num_topics}_LR_{lr}_\
-                                 EMsize_{emsize}_Reg_{reg}_Opt_{opt}_Algorithm_{algorithm}')
+                                 EMsize_{emsize}_Reg_{reg}_Opt_{opt}_\
+                                 CompressTopk_{compress_topk}')
         self.ckpt_path = ckpt_path
         if not os.path.exists(ckpt_path):
             os.makedirs(ckpt_path)
@@ -140,6 +155,7 @@ class WIG():
         sentences, self.id2date, self.id2doc, self.senid2docid, self.date2idlist = \
             self.idmap(dataset, spacy_model, merge_entity, process_fn,
                        remove_stop, remove_punct)
+        # pdb.set_trace()
 
         # prepare train, eval, and test data
         self.d_l = d_l = len(self.senid2docid.keys())
@@ -155,21 +171,36 @@ class WIG():
         data_ids = torch.randperm(d_l)  # ids of splitted sentences
 
         # Word2Vec model
+        # use more workers and less min_count than default
+        try:
+            workers
+        except NameError:
+            workers = 20
+        try:
+            min_count
+        except NameError:
+            min_count = 1
+        # add to kwargs
+        kwargs['size'] = emsize
+        kwargs['seed'] = seed
+        kwargs['workers'] = workers
+        kwargs['min_count'] = min_count
         print('run Word2Vec model for word embeddings...')
         word2vec = Word2Vec(sentences=[sentences[i] for i in data_ids],
                             **kwargs)
         wv = word2vec.wv
         self.vocab = wv.vocab
+        print(f'Vocab length is {len(wv.vocab)}')
 
         # choose with algorithm to use, if compressed then shrink vocab dim
-        if algorithm == 'original':
+        if compress_topk == 0:
             print('algorithm has been chosen as original')
             X = torch.tensor(wv[wv.vocab], dtype=dtype, device=device)
             self.M = mjit(dist(X, metric=metric))
             mycollate = partial(getfreq_single_original, wv)
-        elif algorithm == 'compress':
+        elif compress_topk > 0:
             print('algorithm has been chosen as compressed dictionary')
-            self.M, id2comdict = compress_dictionary(wv, topk=1000,
+            self.M, id2comdict = compress_dictionary(wv, topk=compress_topk,
                                                      l1_reg=0.01,
                                                      metric='sqeuclidean')
             mycollate = partial(getfreq_single_compress, wv, id2comdict)
@@ -178,25 +209,15 @@ class WIG():
             raise ValueError("use 'original' or 'compress' algotithm")
 
         tr_ids, ev_ids, ts_ids = data_ids.split([tr_l, ev_l, ts_l])
-        self.tr_ids = tr_ids
-        self.ev_ids = ev_ids
-        self.ts_ids = ts_ids
+        self.tr_ids, self.ev_ids, self.ts_ids = tr_ids, ev_ids, ts_ids
+
+        # pdb.set_trace()
         self.tr_dl = DataLoader([sentences[i] for i in tr_ids],
                                 batch_size=batch_size, collate_fn=mycollate)
         self.ev_dl = DataLoader([sentences[i] for i in ev_ids],
                                 batch_size=batch_size, collate_fn=mycollate)
         self.ts_dl = DataLoader([sentences[i] for i in ts_ids],
                                 batch_size=batch_size, collate_fn=mycollate)
-
-        global dt
-        if dtype:
-            dt = dtype
-
-        global dev
-        if device == 'cuda':
-            dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        else:
-            dev = torch.device('cpu')
 
         self.model = WasserIndexGen(batch_size=batch_size,
                                     num_topics=num_topics,
@@ -209,13 +230,16 @@ class WIG():
         print(f'WIG model {self.model}')
 
         # init
-        self.R = torch.randn((self.M.shape[0], self.num_topics), device=dev)
-        self.A = torch.randn((self.num_topics, self.d_l), device=dev)
-        self.basis = softmax(self.R, dim=0)  # softmax over columns
-        self.lbd = softmax(self.A, dim=0)
+        self.R = torch.randn((self.M.shape[0], self.num_topics),
+                             device=dev)
+        self.A = torch.randn((self.num_topics, self.d_l),
+                             device=dev)
+        # softmax over columns
+        self.basis = softmax(self.R, dim=0)  # .requires_grad_()
+        self.lbd = softmax(self.A, dim=0)  # .requires_grad_()
 
-    def train(self, train_loader, eval_loader):
-
+    @timer
+    def train(self, loss_per_batch=False):
         # set optimizer
         if self.opt == 'adam':
             optimizer = optim.Adam([self.R, self.A], lr=self.lr,
@@ -236,41 +260,65 @@ class WIG():
             print('Optimizer not supported . Defaulting to vanilla SGD...')
             optimizer = optim.SGD([self.R, self.A], lr=self.lr)
 
-        total_loss = 0.
+        # cnt = 0
         best_loss = 1e9
         for epoch in range(self.epochs):
+            total_loss = 0.
             tr_id = 0
-            for b_id, batch in enumerate(train_loader):
-                for sub_id, each in enumerate(batch):
+            for b_id, batch in enumerate(self.tr_dl):
+                for each in batch:
+                    # self.model.zero_grad()
+                    self.R.requires_grad_()
+                    self.A.requires_grad_()
+                    self.basis.requires_grad_()
+                    self.lbd.requires_grad_()
+                    optimizer.zero_grad()
+                    # self.basis.detach_()
+                    # self.lbd.detach_()
+
                     csa = each.view(-1, 1).to(dev)
                     clbd = self.lbd[:,
                                     self.tr_ids[tr_id]].view(-1, 1).to(dev)
 
-                    # basis.requires_grad_()
-                    # clbd.requires_grad_()
+                    # self.basis.requires_grad_()
+                    # self.clbd.requires_grad_()
                     reg = torch.tensor([self.reg]).to(dev)
 
                     loss = self.model(csa, self.M, self.basis, clbd, reg)
                     loss.backward()
+                    # pdb.set_trace()
                     optimizer.step()
-                    # TODO: check learnable parameterss
-                    total_loss += loss.item()
+
                     tr_id += 1
 
-                self.basis = softmax(self.R, dim=0)  # softmax over columns
+                    self.R.detach_()
+                    self.A.detach_()
+                    self.basis.detach_()
+                    self.lbd.detach_()
+
+                    if not torch.isnan(loss).item():
+                        # pdb.set_trace()
+                        total_loss += loss.item()
+
+                if loss_per_batch:
+                    print('Current Loss: {0:.4f}, Average Loss: {0:.4f}'.format(
+                        loss.item(), total_loss / tr_id))
+
+                # softmax over columns
+                self.basis = softmax(self.R, dim=0)
                 self.lbd = softmax(self.A, dim=0)
 
             # if not self.infer:
             # evaluate after training
-            eval_loss = self.evaluate(self.eval_loader, self.ev_ids,
+            eval_loss = self.evaluate(self.model, self.ev_dl, self.ev_ids,
                                       self.basis, self.lbd)
             if eval_loss < best_loss:  # save bast model among all epochs
                 with open(self.ckpt, 'wb') as f:
                     torch.save(self.model, f)
                 best_loss = eval_loss
             print('*' * 50)
-            print(f'Epoch: {epoch}, LR: {self.lr}, \
-                    Train Loss: {total_loss/tr_id}, Eval Loss: {eval_loss}')
+            print('Epoch: {}, LR: {}, Train Loss: {0:.2f}, Eval Loss: {0:.2f}'.format(
+                epoch, self.lr, total_loss / tr_id, eval_loss))
             print('*' * 50)
             if epoch % self.visualize_every == 0:
                 # TODO: implement visualize function per log_interval
@@ -278,7 +326,7 @@ class WIG():
                 pass
         with open(self.ckpt, 'rb') as f:
             m = torch.load(f)
-        eval_loss = self.evaluate(m, self.eval_loader, self.ev_ids,
+        eval_loss = self.evaluate(m, self.ev_dl, self.ev_ids,
                                   self.basis, self.lbd)
         print(f'Evaluation Loss: {eval_loss}')
         return eval_loss
@@ -295,11 +343,12 @@ class WIG():
             reg = torch.tensor([self.reg]).to(dev)
             ts_id = 0
             for b_id, batch in enumerate(data_loader):
-                sa = batch.view(-1, 1).to(dev)
-                clbd = lbd[:, data_ids[ts_id]].view(-1, 1)
-                loss = model(sa, self.M, basis, clbd, reg)
-                total_loss += loss.item()
-                ts_id += 1
+                for each in batch:
+                    sa = each.view(-1, 1).to(dev)
+                    clbd = lbd[:, data_ids[ts_id]].view(-1, 1)
+                    loss = model(sa, self.M, basis, clbd, reg)
+                    total_loss += loss.item()
+                    ts_id += 1
         return loss / ts_id
 
     def generateindex(self, proj_algo='svd'):
@@ -337,7 +386,6 @@ class WIG():
             os.makedirs('./results')
         with open(os.path.join('./results', 'index.tsv'), 'w') as f:
             df.to_csv(f, sep='\t', header=True, index=False)
-        pass
 
     def idmap(self, dataset, spacy_model, merge_entity, process_fn,
               remove_stop, remove_punct):
@@ -367,40 +415,56 @@ class WIG():
             else:
                 raise ValueError("value of 'interval' must be in 'M' 'Y' 'D'")
 
-        def default_fn(nlp, doc):
-            spacy_doc = nlp(doc)
-            if remove_punct:
-                sens = [[i.lemma_ for i in d if not i.is_punct]
-                        for d in spacy_doc.sents]
-            if remove_stop:
-                sens = [[i.lemma_ for i in d if not i.is_stop]
-                        for d in spacy_doc.sents]
-            return sens
         id2date, id2doc, senid2docid = {}, {}, {}
         date2idlist = defaultdict(list)
         sentences = []
-        sen_id = 0
+
+        print(f'Loading spacy model {spacy_model}')
+        nlp = spacy.load(spacy_model, disable=["tagger"])
         if merge_entity:
-            print(f'Loading spacy model {spacy_model}')
-            nlp = spacy.load(spacy_model, disable=["tagger"])
             merge_ents = nlp.create_pipe("merge_entities")
             nlp.add_pipe(merge_ents)
-        if not process_fn:  # if not providing
-            process = partial(nlp, default_fn)
-        else:
-            process = partial(nlp, process_fn)
+
+        print('preprocessing data with spacy')
+        # TODO: use spacy nlp.pipeline to process faster
         for id, date_doc in enumerate(dataset):
             date, doc = date_doc
             id2date[id] = date
             id2doc[id] = doc
             shortdate = date2str(date, self.interval)
             date2idlist[shortdate].append(id)
-            sens = process(doc)
-            sentences += sens
-            for i in sens:
+
+        sentences, senid2docid = loaddata_pipe(nlp, id2doc, remove_stop,
+                                               remove_punct)
+        return sentences, id2date, id2doc, senid2docid, date2idlist
+
+
+def loaddata_pipe(nlp, id2doc, remove_punct, remove_stop):
+    def ass(token):
+        "return True or False by criterion"
+        if remove_punct:
+            if remove_stop:  # remove both
+                return not (token.is_punct and token.is_stop)
+            else:  # remove punct but not stop
+                return not token.is_punct
+        else:  # remove stop but not punct
+            if remove_stop:
+                return not token.is_stop
+            else:
+                return True
+    senid2docid = {}
+    sentences = []
+    sen_id = 0
+    # pdb.set_trace()
+    parsed_docs = [[[t.lemma_ for t in sen if ass(t)] for sen in doc.sents]
+                   for doc in nlp.pipe(id2doc.values())]
+    for id, sens in enumerate(parsed_docs):
+        sentences += sens
+        for sen in sens:
+            if len(sen) > 0:
                 senid2docid[sen_id] = id
                 sen_id += 1
-        return sentences, id2date, id2doc, senid2docid, date2idlist
+    return sentences, senid2docid
 
 
 def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean'):
@@ -408,7 +472,7 @@ def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean')
     print('compressing dictionary...')
     vocab = gensim_wv.vocab
     assert topk < len(vocab), 'pick smaller number of topk'
-    lasso = linear_model.Lasso(alpha=l1_reg, fit_intercept=False)
+    lasso = linear_model.Lasso(alpha=l1_reg, fit_intercept=False, max_iter=5000)
     base_tokens = []
     for i in range(len(vocab)):
         if len(base_tokens) == topk:
@@ -417,8 +481,8 @@ def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean')
             base_tokens.append(gensim_wv.index2entity[i])
     # other_tokens = [i for i in vocab.keys() if i not in base_tokens]
     X = torch.tensor(gensim_wv[base_tokens],
-                     dtype=dt, device=dev)  # compressed dist
-    M = mjit(dist(X, metric=metric))
+                     dtype=dt, device='cpu')  # compressed dist
+    M = mjit(dist(X.to(dev), metric=metric))
     id2comdict = []
     for tk in gensim_wv.vocab.keys():
         if tk in base_tokens:
@@ -428,31 +492,36 @@ def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean')
         else:
             # fit N * k to N * 1, return 1 * k
             lasso.fit(X.T, torch.tensor(gensim_wv[tk],
-                                        dtype=dt, device=dev).view(-1, 1))
+                                        dtype=dt, device='cpu').view(-1, 1))
             z = torch.tensor(lasso.coef_, dtype=dt, device=dev)
             id2comdict.append(z)
     # return base_tokens, other_tokens
     return M, id2comdict
 
 
-def getfreq_single_compress(gensim_wv, id2comdict, sentence):
-    senvec = [sentence.count(i) for i in gensim_wv.index2word]
-    sendist = torch.stack([ct * id2comdict[id] for id, ct in enumerate(senvec)])
-    return tensordiv(sendist.sum(dim=0))
+def getfreq_single_compress(gensim_wv, id2comdict, sentence_batch):
+    def f(sen):
+        senvec = [sen.count(i) for i in gensim_wv.index2word]
+        sendist = torch.stack([ct * id2comdict[id]
+                               for id, ct in enumerate(senvec)])
+        return sendist.sum(dim=0)
+    sendist_batch = torch.stack([f(sen) for sen in sentence_batch], dim=0)
+    return tensordiv(sendist_batch)
 
 
-def getfreq_single_original(gensim_wv, sentence):
+def getfreq_single_original(gensim_wv, sentence_batch):
     """get the word distribution of a certain sentence"""
-    # assert sentence != []
-    senvec = [sentence.count(i) for i in gensim_wv.index2word]
-    sendist = torch.tensor(senvec, dtype=dt, device=dev)
-    # pdb.set_trace()
-    return tensordiv(sendist)
+    def f(sen):
+        senvec = [sen.count(i) for i in gensim_wv.index2word]
+        sendist = torch.tensor(senvec, dtype=dt, device=dev)
+        return sendist
+    sendist_batch = torch.stack([f(sen) for sen in sentence_batch], dim=0)
+    return tensordiv(sendist_batch)
 
 
 @torch.jit.script
 def tensordiv(sendist: Tensor):
-    return torch.div(sendist, sendist.sum())
+    return sendist / sendist.sum(1).view(-1, 1)
 
 
 @torch.jit.script

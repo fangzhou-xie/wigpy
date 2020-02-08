@@ -2,20 +2,21 @@ import sqlite3 as lite
 
 from wig import WIG
 
-datafile = 'headlines_reduce.tsv'
+datafile = 'headlines.sqlite'
 
 
 def read():
     conn = lite.connect(datafile)
     c = conn.cursor()
-    result = c.execute('select date, title from headliens_reduce;').fetchall()
+    result = c.execute('select date, title from headlines_reduce;').fetchall()
     conn.close()
     return result
 
 
 def main():
     data = read()
-    wig = WIG()
+    wig = WIG(data, compress_topk=0)
+    wig.train(loss_per_batch=True)
     pass
 
 

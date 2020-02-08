@@ -4,6 +4,8 @@
 import torch
 from torch import Tensor, nn
 
+from util import timer
+
 
 class WasserIndexGen(nn.Module):
     def __init__(self, batch_size=64, num_topics=4, reg=0.1,
