@@ -139,14 +139,13 @@ class WIG():
 
         # ckpt
         self.ckpt = os.path.join(ckpt_path,
-                                 f'WIG_Bsz_{batch_size}_K_{num_topics}_LR_{lr}_\
-                                 EMsize_{emsize}_Reg_{reg}_Opt_{opt}_\
-                                 CompressTopk_{compress_topk}')
+                                 f'WIG_Bsz_{batch_size}_K_{num_topics}_LR_{lr}_EMsize_{emsize}_Reg_{reg}_Opt_{opt}_CompressTopk_{compress_topk}')
         self.ckpt_path = ckpt_path
         if not os.path.exists(ckpt_path):
             os.makedirs(ckpt_path)
 
         # set random seed
+        self.seed = seed
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed(seed)
@@ -154,7 +153,7 @@ class WIG():
         sentences, self.id2date, self.id2doc, self.senid2docid, self.date2idlist = \
             self.idmap(dataset, spacy_model, merge_entity, process_fn,
                        remove_stop, remove_punct)
-
+        # pdb.set_trace()
         # prepare train, eval, and test data
         self.d_l = d_l = len(self.senid2docid.keys())
         assert sum(train_eval_test) == 1., \
@@ -304,7 +303,7 @@ class WIG():
                                       self.basis, self.lbd)
             if eval_loss < best_loss:  # save bast model among all epochs
                 with open(self.ckpt, 'wb') as f:
-                    torch.save(self.model, f)
+                    torch.save((self.model, self.basis, self.lbd), f)
                 best_loss = eval_loss
             print('*' * 50)
             print('Epoch: {}, LR: {}, Train Loss: {:.2f}, Eval Loss: {:.2f}'.format(
@@ -315,7 +314,7 @@ class WIG():
                 #     visualize(self.model, self.vocab)
                 pass
         with open(self.ckpt, 'rb') as f:
-            m = torch.load(f)
+            m, basis, lbd = torch.load(f)
         eval_loss = self.evaluate(m, self.ev_dl, self.ev_ids,
                                   self.basis, self.lbd)
         print(f'Evaluation Loss: {eval_loss}')
@@ -344,13 +343,13 @@ class WIG():
     def generateindex(self, proj_algo='svd'):
         "projection algorithm, default 'svd', or 'pca', 'ica'"
         # TODO: generate time-series index from model
-        raise NotImplementedError('generate index')
+        # raise NotImplementedError('generate index')
         with open(self.ckpt, 'rb') as f:
-            m = torch.load(f)
+            m, basis, lbd = torch.load(f)
 
         # load basis and \lambda to cpu
-        basis = m.basis.cpu()
-        lbd = m.lbd.cpu()
+        basis = basis.cpu()
+        lbd = lbd.cpu()
 
         if proj_algo == 'svd':
             proj = TruncatedSVD(n_components=1, random_state=self.seed)
@@ -361,11 +360,12 @@ class WIG():
             proj = PCA(n_components=1, random_state=self.seed)
             raise NotImplementedError('PCA not available')
 
-        basis_proj = proj.fit_transform(basis.T).T
+        basis_proj = torch.tensor(proj.fit_transform(basis.T).T, device='cpu')
         index_docs = basis_proj @ lbd
         ordereddate = OrderedDict(sorted(self.date2idlist.items()))
         interval_len = [len(v) for k, v in ordereddate.items()]
 
+        pdb.set_trace()
         index = np.array([i.sum()
                           for i in index_docs.split(interval_len)]).reshape(-1, 1)
         date_interval = np.array(list(ordereddate.keys())).reshape(-1, 1)
@@ -393,20 +393,6 @@ class WIG():
         remove_punct: bool, whether to remove punctuation
             Default: True
         """
-        def date2str(date, interval):
-            dt = datetime.strptime(date, '%Y-%m-%d')
-            if interval == 'M':
-                return str(dt.date())[:7]
-            elif interval == 'Y':
-                return str(dt.date())[:4]
-            elif interval == 'D':
-                return str(dt.date())
-            else:
-                raise ValueError("value of 'interval' must be in 'M' 'Y' 'D'")
-
-        id2date, id2doc, senid2docid = {}, {}, {}
-        date2idlist = defaultdict(list)
-        sentences = []
 
         print(f'Loading spacy model {spacy_model}')
         nlp = spacy.load(spacy_model, disable=["tagger"])
@@ -415,20 +401,13 @@ class WIG():
             nlp.add_pipe(merge_ents)
 
         print('preprocessing data with spacy')
-        # TODO: use spacy nlp.pipeline to process faster
-        for id, date_doc in enumerate(dataset):
-            date, doc = date_doc
-            id2date[id] = date
-            id2doc[id] = doc
-            shortdate = date2str(date, self.interval)
-            date2idlist[shortdate].append(id)
-
-        sentences, senid2docid = loaddata_pipe(nlp, id2doc, remove_stop,
-                                               remove_punct)
+        sentences, id2date, id2doc, senid2docid, date2idlist = \
+            loaddata_pipe(nlp, dataset, remove_stop,
+                          remove_punct, self.interval)
         return sentences, id2date, id2doc, senid2docid, date2idlist
 
 
-def loaddata_pipe(nlp, id2doc, remove_punct, remove_stop):
+def loaddata_pipe(nlp, dataset, remove_punct, remove_stop, interval):
     def ass(token):
         "return True or False by criterion"
         if remove_punct:
@@ -441,19 +420,40 @@ def loaddata_pipe(nlp, id2doc, remove_punct, remove_stop):
                 return not token.is_stop
             else:
                 return True
-    senid2docid = {}
+
+    def date2str(date, interval):
+        dt = datetime.strptime(date, '%Y-%m-%d')
+        if interval == 'M':
+            return str(dt.date())[:7]
+        elif interval == 'Y':
+            return str(dt.date())[:4]
+        elif interval == 'D':
+            return str(dt.date())
+        else:
+            raise ValueError("value of 'interval' must be in 'M' 'Y' 'D'")
+
+    dates, docs = zip(*dataset)
+    id2date, id2doc, senid2docid = {}, {}, {}
+    date2idlist = defaultdict(list)
     sentences = []
     sen_id = 0
     # pdb.set_trace()
     parsed_docs = [[[t.lemma_ for t in sen if ass(t)] for sen in doc.sents]
-                   for doc in nlp.pipe(id2doc.values())]
+                   for doc in nlp.pipe(docs, disable=['tagger'])]
+    assert len(dates) == len(parsed_docs)
+
     for id, sens in enumerate(parsed_docs):
+        date = dates[id]
+        id2date[id] = date
+        id2doc[id] = docs[id]
+        shortdate = date2str(date, interval)
         sentences += sens
         for sen in sens:
             if len(sen) > 0:
                 senid2docid[sen_id] = id
+                date2idlist[shortdate].append(sen_id)
                 sen_id += 1
-    return sentences, senid2docid
+    return sentences, id2date, id2doc, senid2docid, date2idlist
 
 
 def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean'):

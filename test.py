@@ -56,12 +56,16 @@ def cv():
     print('best parameters are: {}'.format(
         emsize, batch_size, num_topics, epochs, lr, compress_topk))
     # TODO: last training or load existing models
+    wig = WIG(data, emsize=emsize, batch_size=batch_size,
+              num_topics=num_topics, epochs=epochs, lr=lr,
+              compress_topk=compress_topk)
+    wig.generateindex()
 
 
 def main():
     data = read()
     wig = WIG(data, compress_topk=0, epochs=1, min_count=1)
-    wig.train(loss_per_batch=True)
+    wig.train()
     wig.generateindex()
     pass
 
