@@ -235,7 +235,6 @@ class WIG():
         self.basis = softmax(self.R, dim=0)
         self.lbd = softmax(self.A, dim=0)
 
-    @timer
     def train(self, loss_per_batch=False):
         # set optimizer
         if self.opt == 'adam':
@@ -308,7 +307,7 @@ class WIG():
                     torch.save(self.model, f)
                 best_loss = eval_loss
             print('*' * 50)
-            print('Epoch: {}, LR: {}, Train Loss: {0:.2f}, Eval Loss: {0:.2f}'.format(
+            print('Epoch: {}, LR: {}, Train Loss: {:.2f}, Eval Loss: {:.2f}'.format(
                 epoch, self.lr, total_loss / tr_id, eval_loss))
             print('*' * 50)
             if epoch % self.visualize_every == 0:
