@@ -25,7 +25,7 @@ def crossvalidate():
 
 def main():
     data = read()
-    wig = WIG(data, compress_topk=0, epochs=1)
+    wig = WIG(data, compress_topk=0, epochs=1, min_count=1)
     wig.train(loss_per_batch=True)
     wig.generateindex()
     pass

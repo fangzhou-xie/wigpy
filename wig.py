@@ -293,8 +293,7 @@ class WIG():
                         total_loss += loss.item()
 
                 if loss_per_batch:
-                    print('Current Loss: {0:.4f}, Average Loss: {0:.4f}'.format(
-                        loss.item(), total_loss / tr_id))
+                    print('Average Loss: {0:.4f}'.format(total_loss / tr_id))
 
                 # softmax over columns
                 self.basis = softmax(self.R, dim=0)
