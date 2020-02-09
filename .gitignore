@@ -32,6 +32,7 @@ ckpt/
 carma.py
 originalwig.py
 results/
+parameters.db
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
