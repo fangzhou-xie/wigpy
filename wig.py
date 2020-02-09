@@ -322,8 +322,8 @@ class WIG():
             m, basis, lbd = torch.load(f)
         eval_loss = self.evaluate(m, self.ev_dl, self.ev_ids,
                                   self.basis, self.lbd)
-        print(f'Evaluation Loss: {eval_loss}')
-        return eval_loss
+        print(f'Evaluation Loss: {eval_loss.item()}')
+        return eval_loss.item()
 
     def evaluate(self, model, data_loader, data_ids, basis, lbd):
         """

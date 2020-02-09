@@ -30,6 +30,7 @@ MANIFEST
 # project-related files
 ckpt/
 carma.py
+originalwig.py
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
