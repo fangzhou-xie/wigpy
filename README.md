@@ -170,6 +170,12 @@ for the Sinkhorn computation.
 ### Model Parameters
 
 
+As this package is a new implementation of WIG model
+so the computation is slightly different
+than the results in the original WIG paper.
+But the default value are mainly the ones chosen by cross-validation
+as in the paper.
+
 ```
 dataset         : list, of (date, doc) pairs
 train_eval_test : list, of floats sum to 1, how to split dataset
@@ -200,9 +206,14 @@ loss_per_batch  : bool, if print loss per batch
 Also parameters from Word2Vec (gensim)
 ```
 
-As this package is a new implementation of WIG model
-so the computation is slightly different
-than the results in the original WIG paper.
+The hyperparameters should be self-evident.
+Any parameter for `gensim.models.Word2Vec`
+([Word2Vec](https://radimrehurek.com/gensim/models/word2vec.html))
+may also be passed into the WIG model.
+Only remember it is equivalent to pass `emsize` or `size`
+for the embedding dimension, as the latter is defined by
+Word2Vec model.
+
 
 For optimizers, the default is `Adam` as is used by the original
 WIG algorithm. There are several others to choose:
@@ -226,3 +237,19 @@ else:
     print('Optimizer not supported . Defaulting to vanilla SGD...')
     optimizer = optim.SGD([self.R, self.A], lr=self.lr)
 ```
+
+Some of the optimizers have `weight_decay` parameter to have
+L-2 regularization during optimization step.
+
+For preprocessing, it is performed by `spacy` and there are
+4 parameters to control its behavior.
+`spacy_model` is the language model used by `spacy`,
+when dealing with other languages or if you want to use
+large version of English model, be sure to pass it in by this
+argument.
+`merge_entity` is a Boolean value and `spacy` will recognize
+entities and merge them as a single token, e.g. 'quantum mechanics'.
+The default value is true and you could turn it off by 'False'.
+`remove_stop` and `remove_punct` are Boolean values
+to remove (or not) stop words and (or) punctuations.
+The default behavior is to remove punctuation but not stop words.
