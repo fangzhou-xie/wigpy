@@ -1,8 +1,10 @@
+import multiprocessing as mp
 import os
 import pdb
 from collections import OrderedDict, defaultdict
 from datetime import datetime
 from functools import partial
+from operator import itemgetter
 
 import numpy as np
 import pandas as pd
@@ -11,6 +13,7 @@ import torch
 from gensim.models import Word2Vec
 # from scipy.stats import pearsonr, spearmanr
 from sklearn import linear_model
+from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA, FastICA, TruncatedSVD
 from sklearn.preprocessing import scale
 from torch import Tensor, optim
@@ -63,7 +66,9 @@ class WIG():
                  lr=0.005,
                  wdecay=1.2e-6,
                  log_interval=50, seed=0,
-                 compress_topk=0,
+                 prune_topk=0,
+                 l1_reg=0.01,
+                 n_clusters=10,
                  ckpt_path='./ckpt',
                  numItermax=1000,
                  stopThr=1e-9,
@@ -93,7 +98,9 @@ class WIG():
         wdecay          : float, L-2 regularization term used by some optimizers
         log_interval    : int, print log one per k steps
         seed            : int, pseudo-random seed for pytorch
-        compress_topk   : int, max no of tokens to use for compressed algo
+        prune_topk      : int, max no of tokens to use for pruning vocabulary
+        l1_reg          : float, L1 penalty for pruning
+        n_clusters      : int, KMeans clusters
         opt             : str, which optimizer to use, default to 'adam'
         ckpt_path       : str, checkpoint when training model
         numItermax      : int, max steps to run Sinkhorn, dafault 1000
@@ -142,7 +149,7 @@ class WIG():
 
         # ckpt
         self.ckpt = os.path.join(ckpt_path,
-                                 f'WIG_Bsz_{batch_size}_K_{num_topics}_LR_{lr}_EMsize_{emsize}_Reg_{reg}_Opt_{opt}_CompressTopk_{compress_topk}')
+                                 f'WIG_Bsz_{batch_size}_K_{num_topics}_LR_{lr}_EMsize_{emsize}_Reg_{reg}_Opt_{opt}_CompressTopk_{prune_topk}')
         self.ckpt_path = ckpt_path
         if not os.path.exists(ckpt_path):
             os.makedirs(ckpt_path)
@@ -192,16 +199,17 @@ class WIG():
         print(f'Vocab length is {len(wv.vocab)}')
 
         # choose with algorithm to use, if compressed then shrink vocab dim
-        if compress_topk == 0:
+        if prune_topk == 0:
             print('using original algorithm')
             X = torch.tensor(wv[wv.vocab], dtype=dtype, device=device)
             self.M = mjit(dist(X, metric=metric))
             mycollate = partial(getfreq_single_original, wv)
-        elif compress_topk > 0:
+        elif prune_topk > 0:
             print('using compressed dictionary algorithm')
-            print('compressed dictionary length is {}'.format(compress_topk))
-            self.M, id2comdict = compress_dictionary(wv, topk=compress_topk,
-                                                     l1_reg=0.01,
+            print('compressed dictionary length is {}'.format(prune_topk))
+            self.M, id2comdict = compress_dictionary(wv, topk=prune_topk,
+                                                     n_clusters=n_clusters,
+                                                     l1_reg=l1_reg,
                                                      metric='sqeuclidean')
             mycollate = partial(getfreq_single_compress, wv, id2comdict)
         else:
@@ -482,22 +490,27 @@ def loaddata_pipe(nlp, dataset, remove_punct, remove_stop, interval):
     return sentences, id2date, id2doc, senid2docid, date2idlist
 
 
-def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean'):
+def compress_dictionary(gensim_wv, topk=1000, n_clusters=10,
+                        l1_reg=0.01, metric='sqeuclidean', seed=0):
     "gensim_wv is gensim_model.wv"
     print('compressing dictionary...')
     vocab = gensim_wv.vocab
     assert topk < len(vocab), 'pick smaller number of topk'
     lasso = linear_model.Lasso(alpha=l1_reg, fit_intercept=False, max_iter=5000)
     base_tokens = []
-    for i in range(len(vocab)):
-        if len(base_tokens) == topk:
-            break
-        if gensim_wv.index2entity[i] not in stop_words:
-            base_tokens.append(gensim_wv.index2entity[i])
+    # TODO: replace the frequency-based base-tokens
+    # for i in range(len(vocab)):
+    #     if len(base_tokens) == topk:
+    #         break
+    #     if gensim_wv.index2entity[i] not in stop_words:
+    #         base_tokens.append(gensim_wv.index2entity[i])
+
+    base_tokens = km_compress(gensim_wv, topk, n_clusters, seed)
     # other_tokens = [i for i in vocab.keys() if i not in base_tokens]
     X = torch.tensor(gensim_wv[base_tokens],
                      dtype=dt, device='cpu')  # compressed dist
     M = mjit(dist(X.to(dev), metric=metric))
+    # pdb.set_trace()
     id2comdict = []
     for tk in gensim_wv.vocab.keys():
         if tk in base_tokens:
@@ -511,6 +524,39 @@ def compress_dictionary(gensim_wv, topk=1000, l1_reg=0.01, metric='sqeuclidean')
             z = torch.tensor(lasso.coef_, dtype=dt, device=dev)
             id2comdict.append(z)
     return M, id2comdict
+
+
+def km_compress(wv, topk=1000, n_clusters=10, seed=0):
+    "default to 10 cluster, each having 100 tokens, total 1000 vocab"
+    tk_cluster = round(topk / n_clusters)  # ceil the float
+
+    km = KMeans(n_clusters=n_clusters, random_state=seed, n_jobs=-3)
+    vl = list(wv.vocab)
+    X = wv[wv.vocab]
+    km.fit(X)
+    k_base = []
+    for k in range(n_clusters):
+        # get indices for cluster k
+        k_indices = np.argwhere(km.labels_ == k).flatten().tolist()
+        kidtokens = [(wv.index2word.index(vl[i]), vl[i]) for i in k_indices
+                     if vl[i] not in stop_words]
+        sort_ktokens = sorted(kidtokens, key=itemgetter(0))
+        ct = 0
+        for id_tk in sort_ktokens:
+            if ct == tk_cluster:
+                break
+            else:
+                k_base.append(id_tk[1])
+                ct += 1
+        # pdb.set_trace()
+    if len(k_base) != topk:
+        for i in vl:
+            if len(k_base) == topk:
+                break
+            elif i not in k_base:
+                k_base.append(i)
+
+    return k_base
 
 
 def getfreq_single_compress(gensim_wv, id2comdict, sentence_batch):
