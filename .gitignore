@@ -34,6 +34,7 @@ originalwig.py
 results/
 parameters.db
 temp/
+compare.tsv
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
