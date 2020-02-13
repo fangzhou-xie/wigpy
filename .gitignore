@@ -35,6 +35,7 @@ results/
 parameters.db
 temp/
 compare.tsv
+idea/
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
