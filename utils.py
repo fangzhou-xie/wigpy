@@ -29,9 +29,12 @@ def timer(method):
     return timed
 
 
-def readdata():
+def readdata(summary=False):
     conn = lite.connect(datafile)
     c = conn.cursor()
-    result = c.execute('select date, title from headlines_reduce;').fetchall()
+    if summary:
+        result = c.execute('select date, title, summary from headlines_reduce;').fetchall()
+    else:
+        result = c.execute('select date, title from headlines_reduce;').fetchall()
     conn.close()
     return result

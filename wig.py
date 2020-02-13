@@ -65,7 +65,8 @@ class WIG():
                  opt='adam',
                  lr=0.005,
                  wdecay=1.2e-6,
-                 log_interval=50, seed=0,
+                 log_interval=50,
+                 seed=0,
                  prune_topk=0,
                  l1_reg=0.01,
                  n_clusters=10,
@@ -530,7 +531,7 @@ def km_compress(wv, topk=1000, n_clusters=10, seed=0):
     "default to 10 cluster, each having 100 tokens, total 1000 vocab"
     tk_cluster = round(topk / n_clusters)  # ceil the float
 
-    km = KMeans(n_clusters=n_clusters, random_state=seed, n_jobs=-3)
+    km = KMeans(n_clusters=n_clusters, random_state=seed, n_jobs=-4)
     vl = list(wv.vocab)
     X = wv[wv.vocab]
     km.fit(X)
