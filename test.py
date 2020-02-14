@@ -12,7 +12,7 @@ years_fmt = mdates.DateFormatter('%Y')
 
 def test(ct=0):
     data = readdata()
-    wig = WIG(data, compress_topk=ct, epochs=1, min_count=1)
+    wig = WIG(data, prune_topk=ct, epochs=1, min_count=1)
     # wig.train()
     df = wig.generateindex(compare=True)
     testplot(df, ct)
