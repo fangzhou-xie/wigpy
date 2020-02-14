@@ -56,7 +56,7 @@ stop_words = ['i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves',
 class WIG():
     def __init__(self,
                  dataset,
-                 train_eval_test=[0.6, 0.1, 0.3],
+                 train_test_ratio=[0.7, 0.3],
                  emsize=10,
                  batch_size=64,
                  num_topics=4,
@@ -89,7 +89,7 @@ class WIG():
         Parameters:
         ======
         dataset         : list, of (date, doc) pairs
-        train_eval_test : list, of floats sum to 1, how to split dataset
+        train_test_ratio : list, of floats sum to 1, how to split dataset
         emsize          : int, dim of embedding
         batch_size      : int, size of a batch
         num_topics      : int, K topics
@@ -167,13 +167,12 @@ class WIG():
         # pdb.set_trace()
         # prepare train, eval, and test data
         self.d_l = d_l = len(self.senid2docid.keys())
-        assert sum(train_eval_test) == 1., \
+        assert sum(train_test_ratio) == 1., \
             'Three shares do not sum to one.'
-        train_r, eval_r, test_r = train_eval_test
-        print(f'Splitting data by ratio: {train_r} {eval_r} {test_r}')
+        train_r, test_r = train_test_ratio
+        print(f'Splitting data by ratio: {train_r} {test_r}')
         tr_l = round(d_l * train_r)
-        ts_l = round(d_l * test_r)
-        ev_l = d_l - tr_l - ts_l
+        ts_l = d_l - tr_l
 
         # shuffle ids
         data_ids = torch.randperm(d_l)  # ids of splitted sentences
@@ -217,13 +216,11 @@ class WIG():
             # TODO: geodesic regression with l1?
             raise ValueError("use 'original' or 'compress' algotithm")
 
-        tr_ids, ev_ids, ts_ids = data_ids.split([tr_l, ev_l, ts_l])
-        self.tr_ids, self.ev_ids, self.ts_ids = tr_ids, ev_ids, ts_ids
+        tr_ids, ts_ids = data_ids.split([tr_l, ts_l])
+        self.tr_ids, self.ts_ids = tr_ids, ts_ids
 
         # pdb.set_trace()
         self.tr_dl = DataLoader([sentences[i] for i in tr_ids],
-                                batch_size=batch_size, collate_fn=mycollate)
-        self.ev_dl = DataLoader([sentences[i] for i in ev_ids],
                                 batch_size=batch_size, collate_fn=mycollate)
         self.ts_dl = DataLoader([sentences[i] for i in ts_ids],
                                 batch_size=batch_size, collate_fn=mycollate)
@@ -313,7 +310,7 @@ class WIG():
 
             # if not self.infer:
             # evaluate after training
-            eval_loss = self.evaluate(self.model, self.ev_dl, self.ev_ids,
+            eval_loss = self.evaluate(self.model, self.ts_dl, self.ts_ids,
                                       self.basis, self.lbd)
             if eval_loss < best_loss:  # save bast model among all epochs
                 with open(self.ckpt, 'wb') as f:
@@ -329,7 +326,7 @@ class WIG():
                 pass
         with open(self.ckpt, 'rb') as f:
             m, basis, lbd = torch.load(f)
-        eval_loss = self.evaluate(m, self.ev_dl, self.ev_ids,
+        eval_loss = self.evaluate(m, self.ts_dl, self.ts_ids,
                                   self.basis, self.lbd)
         print(f'Evaluation Loss: {eval_loss.item()}')
         return eval_loss.item()
