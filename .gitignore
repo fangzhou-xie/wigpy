@@ -36,6 +36,8 @@ parameters.db
 temp/
 compare.tsv
 .idea/
+README.rmd
+README.html
 
 # PyInstaller
 #  Usually these files are written by a python script from a template
