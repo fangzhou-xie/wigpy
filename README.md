@@ -145,3 +145,8 @@ Now that we have the "base tokens" at hand, the next step is to represent the wh
 ![v\_o = \\sum\_{b=1}^{B}\\alpha\_{o,b}v\_b + \\lambda\\sum\_{b=1}^{B}|\\alpha\_{o,b}|,](https://latex.codecogs.com/png.latex?v_o%20%3D%20%5Csum_%7Bb%3D1%7D%5E%7BB%7D%5Calpha_%7Bo%2Cb%7Dv_b%20%2B%20%5Clambda%5Csum_%7Bb%3D1%7D%5E%7BB%7D%7C%5Calpha_%7Bo%2Cb%7D%7C%2C "v_o = \sum_{b=1}^{B}\alpha_{o,b}v_b + \lambda\sum_{b=1}^{B}|\alpha_{o,b}|,")
 
 and for each ![o](https://latex.codecogs.com/png.latex?o "o"), we have a weight vector of length ![B](https://latex.codecogs.com/png.latex?B "B") to represent token ![o](https://latex.codecogs.com/png.latex?o "o") in the ![B](https://latex.codecogs.com/png.latex?B "B")-dimensional space. The original WIG model will calculate ![N](https://latex.codecogs.com/png.latex?N "N")-dimensional word frequency vector for the further transportation computation, and now we need to use the ![\\alpha\_o = \[\\alpha\_{o,b}\]](https://latex.codecogs.com/png.latex?%5Calpha_o%20%3D%20%5B%5Calpha_%7Bo%2Cb%7D%5D "\alpha_o = [\alpha_{o,b}]") to represent this ![o](https://latex.codecogs.com/png.latex?o "o") token. Finally, we could compute pair-wise word-distance matrix ![B\\times B](https://latex.codecogs.com/png.latex?B%5Ctimes%20B "B\times B") for the Sinkhorn computation.
+
+License
+-------
+
+This package is under MIT license.
