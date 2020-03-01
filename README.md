@@ -1,7 +1,6 @@
 wigpy: Computing Wasserstein Index Generation model and Pruned WIG
 ================
 Fangzhou Xie (fangzhou\[dot\]xie\[at\]nyu\[dot\]edu)
-February 29, 2020
 
 wigpy
 -----
@@ -21,8 +20,22 @@ Dependencies
 
 Note: This package is developed under Ubuntu 18.04.3 LTS but not tested on macOS or Windows machines. I think macOS should work fine but I highly doubt it is the case for Windows users. I only listed the version of packages that I am using, and other (previous) versions may also work as well.
 
-Installation
-------------
+To install pytorch and spacy with GPU (CUDA) support, please consult their official website for installation instructions. Other packages should be available through both `conda` or `pip` channel.
+
+### Anaconda
+
+It is recommended to install Anaconda or Anaconda mini for whole suite of python and its related scientific libraries. If this is the case for you, you can install packages like:
+
+    conda install numpy pandas gensim scikit-learn
+
+### Otherwise
+
+Otherwise, you will need `pip` to install like this:
+
+    pip install numpy pandas gensim scikit-learn
+
+Installation of WIG
+-------------------
 
 Change to your project directory and clone this repository:
 
