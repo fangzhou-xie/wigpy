@@ -37,6 +37,8 @@ temp/
 compare.tsv
 .idea/
 README.html
+README.knit.md
+README.utf8.md
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

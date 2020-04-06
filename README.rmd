@@ -1,10 +1,10 @@
 ---
-    title: "wigpy: Computing Wasserstein Index Generation model and Pruned WIG"
-    author: Fangzhou Xie (fangzhou[dot]xie[at]nyu[dot]edu)
-    # date: "`r format(Sys.time(), '%B %d, %Y')`"
-    output:
-        github_document:
-            pandoc_args: --webtex
+title: "wigpy: Computing Wasserstein Index Generation model and Pruned WIG"
+author: Fangzhou Xie (fangzhou[dot]xie[at]nyu[dot]edu)
+# date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+    github_document:
+        pandoc_args: --webtex=https://latex.codecogs.com/png.latex?
 ---
 
 ## wigpy
@@ -22,6 +22,41 @@ while the latter is described in
 ([arxiv](https://arxiv.org/abs/2004.00999))
 as an extension to the original WIG model to deal with large-vocabulary instances.
 
+## Citation
+
+Please cite the following papers if you include this package in your work.
+Use this one if you use the original WIG model:
+
+```
+@article{xie_wig_2020,
+	title = {Wasserstein {Index} {Generation} {Model}: {Automatic} generation of time-series index with application to {Economic} {Policy} {Uncertainty}},
+	volume = {186},
+	issn = {0165-1765},
+	shorttitle = {Wasserstein {Index} {Generation} {Model}},
+	url = {http://www.sciencedirect.com/science/article/pii/S0165176519304410},
+	doi = {10.1016/j.econlet.2019.108874},
+	language = {en},
+	urldate = {2019-12-10},
+	journal = {Economics Letters},
+	author = {Xie, Fangzhou},
+	month = jan,
+	year = {2020},
+	keywords = {Economic Policy Uncertainty Index (EPU), Singular Value Decomposition (SVD), Wasserstein Dictionary Learning (WDL), Wasserstein Index Generation Model (WIG)},
+	pages = {108874},
+}
+```
+
+Or use this one if you choose the pruned WIG variant:
+```
+@misc{xie_prunedwig_2020,
+    title={Pruned Wasserstein Index Generation Model and wigpy Package},
+    author={Fangzhou Xie},
+    year={2020},
+    eprint={2004.00999},
+    archivePrefix={arXiv},
+    primaryClass={cs.LG}
+}
+```
 
 ## Dependencies
 * python 3.7.6
@@ -262,7 +297,7 @@ I first consider the unsupervised $k$-means clustering on word vectors (given by
 to first "word-clusters" and pick the most frequent tokens among each clusters.
 
 Formally speaking, we set up the following minimization problem:
-$$\argmin_{\mathcal{K}_1,\cdots,\mathcal{K}_n}\sum_{k=1}^{K}\sum_{x\in \mathcal{K}_k}||x- \mu_k||,$$
+$$argmin_{\mathcal{K}_1,\cdots,\mathcal{K}_n}\sum_{k=1}^{K}\sum_{x\in \mathcal{K}_k}||x- \mu_k||,$$
 and we could find $K$ clusters of words.
 
 The number of tokens in a cluster is given by the formula: $\frac{B}{K}$,
