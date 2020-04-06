@@ -36,7 +36,6 @@ parameters.db
 temp/
 compare.tsv
 .idea/
-README.rmd
 README.html
 
 # PyInstaller
