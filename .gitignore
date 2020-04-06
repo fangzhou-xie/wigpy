@@ -39,6 +39,7 @@ compare.tsv
 README.html
 README.knit.md
 README.utf8.md
+.Rhistory
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

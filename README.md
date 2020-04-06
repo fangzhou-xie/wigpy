@@ -236,68 +236,72 @@ However, this model leverages Wasserstein distance, which is notoriously
 expensive for computation. Even with the Sinkhorn regularization, the
 Optimal-Transport based calculations are still slow to compute. Further,
 the WIG model requires a full ![N \\times
-N](https://latex.codecogs.com/png.latex?N%20%5Ctimes%20N "N \\times N")
-matrix to be calculated, where
-![N](https://latex.codecogs.com/png.latex?N "N") is the dimension of
-vocabulary. It is obvious that when the dataset and vocabulary is large,
-the memory become an issue, especially if we still want to use GPU for
-acceleration (VRAMs are typically smaller than RAMs). Thus, I propose
-this modified version–pruned WIG to shrink vocabulary to a smaller
-dimension.
+N](http://chart.apis.google.com/chart?cht=tx&chl=N%20%5Ctimes%20N
+"N \\times N") matrix to be calculated, where
+![N](http://chart.apis.google.com/chart?cht=tx&chl=N "N") is the
+dimension of vocabulary. It is obvious that when the dataset and
+vocabulary is large, the memory become an issue, especially if we still
+want to use GPU for acceleration (VRAMs are typically smaller than
+RAMs). Thus, I propose this modified version–pruned WIG to shrink
+vocabulary to a smaller dimension.
 
 First we need to identify the “base tokens”. The idea is to choose a
 subset of vocabulary, of length
-![B](https://latex.codecogs.com/png.latex?B "B"), to represent the whole
-vocabulary, of length ![N](https://latex.codecogs.com/png.latex?N "N"),
-where ![B \<\< N](https://latex.codecogs.com/png.latex?B%20%3C%3C%20N
+![B](http://chart.apis.google.com/chart?cht=tx&chl=B "B"), to represent
+the whole vocabulary, of length
+![N](http://chart.apis.google.com/chart?cht=tx&chl=N "N"), where ![B
+\<\< N](http://chart.apis.google.com/chart?cht=tx&chl=B%20%3C%3C%20N
 "B \<\< N"). Now the question become: how should we choose the “base
 tokens” wisely? I first consider the unsupervised
-![k](https://latex.codecogs.com/png.latex?k "k")-means clustering on
-word vectors (given by Word2Vec) to first “word-clusters” and pick the
-most frequent tokens among each clusters.
+![k](http://chart.apis.google.com/chart?cht=tx&chl=k "k")-means
+clustering on word vectors (given by Word2Vec) to first “word-clusters”
+and pick the most frequent tokens among each clusters.
 
 Formally speaking, we set up the following minimization problem:
   
 ![argmin\_{\\mathcal{K}\_1,\\cdots,\\mathcal{K}\_n}\\sum\_{k=1}^{K}\\sum\_{x\\in
 \\mathcal{K}\_k}||x-
-\\mu\_k||,](https://latex.codecogs.com/png.latex?argmin_%7B%5Cmathcal%7BK%7D_1%2C%5Ccdots%2C%5Cmathcal%7BK%7D_n%7D%5Csum_%7Bk%3D1%7D%5E%7BK%7D%5Csum_%7Bx%5Cin%20%5Cmathcal%7BK%7D_k%7D%7C%7Cx-%20%5Cmu_k%7C%7C%2C
+\\mu\_k||,](http://chart.apis.google.com/chart?cht=tx&chl=argmin_%7B%5Cmathcal%7BK%7D_1%2C%5Ccdots%2C%5Cmathcal%7BK%7D_n%7D%5Csum_%7Bk%3D1%7D%5E%7BK%7D%5Csum_%7Bx%5Cin%20%5Cmathcal%7BK%7D_k%7D%7C%7Cx-%20%5Cmu_k%7C%7C%2C
 "argmin_{\\mathcal{K}_1,\\cdots,\\mathcal{K}_n}\\sum_{k=1}^{K}\\sum_{x\\in \\mathcal{K}_k}||x- \\mu_k||,")  
-and we could find ![K](https://latex.codecogs.com/png.latex?K "K")
-clusters of words.
+and we could find ![K](http://chart.apis.google.com/chart?cht=tx&chl=K
+"K") clusters of words.
 
 The number of tokens in a cluster is given by the formula:
-![\\frac{B}{K}](https://latex.codecogs.com/png.latex?%5Cfrac%7BB%7D%7BK%7D
-"\\frac{B}{K}"), where ![B](https://latex.codecogs.com/png.latex?B "B")
-is length of “base tokens” and
-![K](https://latex.codecogs.com/png.latex?K "K") is the number of
-clusters. In this way, we are picking tokens from clusters equally.
+![\\frac{B}{K}](http://chart.apis.google.com/chart?cht=tx&chl=%5Cfrac%7BB%7D%7BK%7D
+"\\frac{B}{K}"), where
+![B](http://chart.apis.google.com/chart?cht=tx&chl=B "B") is length of
+“base tokens” and ![K](http://chart.apis.google.com/chart?cht=tx&chl=K
+"K") is the number of clusters. In this way, we are picking tokens from
+clusters equally.
 
 Now that we have the “base tokens” at hand, the next step is to
 represent the whole vocabulary by these “base tokens”. This step is
 conducted by using LASSO regression. Denote word vector of base tokens
-as ![v\_b](https://latex.codecogs.com/png.latex?v_b "v_b") and other
-tokens as ![v\_o](https://latex.codecogs.com/png.latex?v_o "v_o"), we
+as ![v\_b](http://chart.apis.google.com/chart?cht=tx&chl=v_b "v_b") and
+other tokens as
+![v\_o](http://chart.apis.google.com/chart?cht=tx&chl=v_o "v_o"), we
 have
 
   
 ![v\_o = \\sum\_{b=1}^{B}\\alpha\_{o,b}v\_b +
-\\lambda\\sum\_{b=1}^{B}|\\alpha\_{o,b}|,](https://latex.codecogs.com/png.latex?v_o%20%3D%20%5Csum_%7Bb%3D1%7D%5E%7BB%7D%5Calpha_%7Bo%2Cb%7Dv_b%20%2B%20%5Clambda%5Csum_%7Bb%3D1%7D%5E%7BB%7D%7C%5Calpha_%7Bo%2Cb%7D%7C%2C
+\\lambda\\sum\_{b=1}^{B}|\\alpha\_{o,b}|,](http://chart.apis.google.com/chart?cht=tx&chl=v_o%20%3D%20%5Csum_%7Bb%3D1%7D%5E%7BB%7D%5Calpha_%7Bo%2Cb%7Dv_b%20%2B%20%5Clambda%5Csum_%7Bb%3D1%7D%5E%7BB%7D%7C%5Calpha_%7Bo%2Cb%7D%7C%2C
 "v_o = \\sum_{b=1}^{B}\\alpha_{o,b}v_b + \\lambda\\sum_{b=1}^{B}|\\alpha_{o,b}|,")  
 
-and for each ![o](https://latex.codecogs.com/png.latex?o "o"), we have a
-weight vector of length ![B](https://latex.codecogs.com/png.latex?B "B")
-to represent token ![o](https://latex.codecogs.com/png.latex?o "o") in
-the ![B](https://latex.codecogs.com/png.latex?B "B")-dimensional space.
-The original WIG model will calculate
-![N](https://latex.codecogs.com/png.latex?N "N")-dimensional word
-frequency vector for the further transportation computation, and now we
-need to use the ![\\alpha\_o =
-\[\\alpha\_{o,b}\]](https://latex.codecogs.com/png.latex?%5Calpha_o%20%3D%20%5B%5Calpha_%7Bo%2Cb%7D%5D
+and for each ![o](http://chart.apis.google.com/chart?cht=tx&chl=o "o"),
+we have a weight vector of length
+![B](http://chart.apis.google.com/chart?cht=tx&chl=B "B") to represent
+token ![o](http://chart.apis.google.com/chart?cht=tx&chl=o "o") in the
+![B](http://chart.apis.google.com/chart?cht=tx&chl=B "B")-dimensional
+space. The original WIG model will calculate
+![N](http://chart.apis.google.com/chart?cht=tx&chl=N "N")-dimensional
+word frequency vector for the further transportation computation, and
+now we need to use the ![\\alpha\_o =
+\[\\alpha\_{o,b}\]](http://chart.apis.google.com/chart?cht=tx&chl=%5Calpha_o%20%3D%20%5B%5Calpha_%7Bo%2Cb%7D%5D
 "\\alpha_o = [\\alpha_{o,b}]") to represent this
-![o](https://latex.codecogs.com/png.latex?o "o") token. Finally, we
-could compute pair-wise word-distance matrix ![B\\times
-B](https://latex.codecogs.com/png.latex?B%5Ctimes%20B "B\\times B") for
-the Sinkhorn computation.
+![o](http://chart.apis.google.com/chart?cht=tx&chl=o "o") token.
+Finally, we could compute pair-wise word-distance matrix ![B\\times
+B](http://chart.apis.google.com/chart?cht=tx&chl=B%5Ctimes%20B
+"B\\times B") for the Sinkhorn computation.
 
 ## License
 
