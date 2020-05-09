@@ -84,10 +84,9 @@ Otherwise, you will need `pip` to install like this:
 
 ## Installation of WIG
 
-Change to your project directory and clone this repository:
+You can install `wigpy` by `pip`:
 
-    cd path/to/your/project
-    git clone https://github.com/mark-fangzhou-xie/wigpy.git
+    pip install wigpy
 
 ## Usage
 
@@ -96,7 +95,7 @@ Change to your project directory and clone this repository:
 The main model class is `WIG` and simply pass your time-attached
 sentences to it.
 
-    from wigpy.wig import WIG
+    from wigpy import WIG
     
     sentences = [('2018-01-01', 'This is the first sentence.'),
                  ('2020-02-14', 'I have another sentence.')]
@@ -135,6 +134,35 @@ This also works so you don’t have to merge documents beforehand by
 yourself. In many applications, the texts are observed several times a
 day and you can pack them all in a list to the `WIG` and it will take
 care of everything else.
+
+# An Example
+
+You could try to play with the provided test dataset by calling the
+`readdata` function.
+
+    from wigpy import readdata
+
+This example dataset is the one I used for the publication of both WIG
+paper, where I collected some news headlines from *The New York Times*
+from 1980-2018. The function `readdata` will return a list of tuples,
+where each tuple is a pair of `date` and `headline`. That is exactly
+what we need for feeding the `WIG` model.
+
+    from wigpy import WIG, readdata
+    
+    data = readdata()
+    wig = WIG()
+    
+    # train and evaluate the model, return evaluation loss
+    # crossvalidation is done here automatically
+    loss = wig.train()
+    
+    # save the generated index
+    wig.generateindex(output_file='index.tsv')
+
+If you accept all parameters by its default value, then you are done\!
+The output `index.tsv` is a tab-separated file under subfolder
+`results`.
 
 ### Model Parameters
 
