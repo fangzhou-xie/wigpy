@@ -19,9 +19,8 @@ from sklearn.preprocessing import scale
 from torch import Tensor, optim
 from torch.nn.functional import softmax
 from torch.utils.data import DataLoader
-
-from model import WasserIndexGen
-from utils import timer
+from wigpy.model import WasserIndexGen
+from wigpy.utils import timer
 
 # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 spacy.prefer_gpu()
